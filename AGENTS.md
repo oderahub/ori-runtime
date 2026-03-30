@@ -1,0 +1,445 @@
+# AGENTS.md — Ori Codebase Guide for AI Coding Agents
+
+This file is for any AI coding agent working on this repository:
+Claude Code, Cursor, Codex, Gemini, Copilot, or any other tool.
+
+For Claude Code specifically: `CLAUDE.md` contains the full architectural
+specification including all data types, build order, and design decisions.
+Read `CLAUDE.md` before writing any implementation code.
+
+This file covers how to navigate and extend the codebase once you understand
+the architecture.
+
+---
+
+## What this project is
+
+Ori is an agentic IoT runtime. It reads physical sensor data and takes
+autonomous actions based on LLM reasoning. It runs offline on a Raspberry Pi.
+
+The key concept that every contributor must understand before touching code:
+
+```
+Ori is NOT a monitoring system.
+Ori is an agent that reasons about physical signals and acts on them.
+
+Tier A actions  — always autonomous (alerts, logs)
+Tier B actions  — autonomous by default (source switching, valve control)
+Tier C actions  — approval required (breaker trips, equipment shutdown)
+Tier D actions  — always autonomous, highest priority (safety cutoffs)
+```
+
+Every function, class, and test must be written with this framing in mind.
+If you are writing code that makes Ori more passive, you are going in the
+wrong direction.
+
+---
+
+## Repository layout
+
+```
+ori/                    Python package — the runtime
+├── hal/                Layer 1: hardware adapters
+├── network/            Layer 2: event bus, deduplication, data types
+├── reasoning/          Layer 4: LLM tiers + action dispatcher
+├── skills/             Layer 5: skill loader and sandbox
+├── actions/            Action executors called by the dispatcher
+├── state/              SQLite state store
+├── config.py           ori.yaml loader
+└── runtime.py          Main event loop — ties everything together
+
+skills/                 Bundled skills (YAML + Python hooks)
+tests/                  pytest test suite
+```
+
+---
+
+## The five extension points
+
+When someone asks you to add something new to Ori, it almost always fits into
+one of these five patterns. Identify the pattern first, then implement.
+
+---
+
+### 1. Adding a new HAL adapter
+
+**When:** A new sensor protocol or hardware type needs support.
+**Where:** `ori/hal/new_adapter.py`
+**Pattern:**
+
+```python
+from ori.hal.base import BaseAdapter, AdapterConnectionError, AdapterTimeoutError
+from ori.network.events import SensorReading
+import time
+
+class NewProtocolAdapter(BaseAdapter):
+
+    def __init__(self):
+        self._connected = False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self, config: dict) -> None:
+        # config keys come from ori.yaml sensors[n] block
+        # Raise AdapterConnectionError if connection fails
+        try:
+            # initialise hardware connection here
+            self._connected = True
+        except Exception as e:
+            raise AdapterConnectionError(f"Failed to connect: {e}") from e
+
+    async def read(self, sensor_id: str) -> SensorReading:
+        # Must complete within config['read_timeout_ms'] or raise AdapterTimeoutError
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type='temperature',   # match what ori.yaml declares
+            value=0.0,
+            unit='celsius',
+            timestamp=int(time.time() * 1000),
+            quality=1.0,
+            metadata={'source': 'new_protocol'}
+        )
+
+    async def close(self) -> None:
+        self._connected = False
+```
+
+**Rules:**
+
+- Wrap all hardware imports in `try/except ImportError` so the adapter
+  fails gracefully on platforms where the library is unavailable
+- Never raise anything except `AdapterConnectionError` or `AdapterTimeoutError`
+- Always set `metadata['source']` to the protocol name
+- Add `@pytest.mark.skipif` to all tests that require real hardware:
+  ```python
+  skip_if_no_hardware = pytest.mark.skipif(
+      not os.path.exists('/dev/i2c-1'),
+      reason="Hardware not available"
+  )
+  ```
+- Register the adapter in `ori/config.py` protocol map so ori.yaml can
+  reference it by name
+
+---
+
+### 2. Adding a new skill
+
+**When:** A new use case needs agent behaviour (agriculture, cold chain, HVAC…)
+**Where:** `skills/skill-name/skill.yaml` and optionally `hooks.py`
+**Pattern:**
+
+```yaml
+name: your-skill-name
+version: 0.1.0
+author: your-github-handle
+license: Apache-2.0
+signature: ed25519:PENDING # filled by ori skill publish
+
+sensors_required:
+  - type: temperature # sensor types this skill needs
+
+triggers:
+  - name: your_trigger_name
+    condition: "value > 30.0"
+    cooldown_seconds: 300
+    escalate_to: local_slm # rule | local_slm | gateway | cloud
+    action_tier: A # A | B | C | D — REQUIRED, no default
+
+prompts:
+  your_trigger_name: |
+    Current reading: {value}{unit}
+    History (last 6): {history.last_n('sensor_id', 6)}
+    Is this abnormal? What should the operator do?
+    Answer in 2-3 plain sentences.
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+  defaults:
+    your_trigger_name: [alert_whatsapp]
+```
+
+**Rules:**
+
+- `action_tier` is REQUIRED on every trigger. Missing tier = validation error.
+- `bypass_llm: true` MUST be paired with `action_tier: D`. Never one without
+  the other.
+- Tier C triggers MUST declare `safe_default_action`.
+- Prompts must be in plain language — no technical jargon in the output.
+  The end user is a Lagos SME owner, not a systems engineer.
+- `hooks.py` is optional. Only add it for calculations that cannot be
+  expressed in YAML (cost estimates, custom formatting, external API calls).
+
+```python
+# hooks.py — optional, only when YAML is insufficient
+def post_reasoning(result, ctx):
+    """Called after LLM reasoning, before action dispatch."""
+    # result: ReasoningResult
+    # ctx: SkillContext with .reading, .history, .device, .config
+    return result  # always return result (modified or unchanged)
+```
+
+---
+
+### 3. Adding a new action executor
+
+**When:** Ori needs to take a new kind of action (push notification, relay
+variant, database write, REST webhook…)
+**Where:** `ori/actions/new_action.py`
+**Pattern:**
+
+```python
+from ori.network.events import ActionResult
+import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+class NewAction:
+
+    def __init__(self, config: dict):
+        # config from ori.yaml actions.new_action block
+        self._enabled = config.get('enabled', False)
+
+    async def execute(self, message: str, context) -> bool:
+        """
+        Execute the action. Returns True on success, False on failure.
+        NEVER raises — always returns bool.
+        A failed action must not crash the runtime.
+        """
+        if not self._enabled:
+            logger.debug("NewAction is disabled")
+            return False
+        try:
+            # perform the action
+            return True
+        except Exception as e:
+            logger.error(f"NewAction failed: {e}")
+            return False
+```
+
+**Rules:**
+
+- Action executors NEVER raise exceptions. They return `False` on failure.
+- All network calls must use `asyncio`-compatible libraries (`httpx`, `aiohttp`).
+  Never `requests`.
+- Always set a timeout on outbound network calls (2–3 seconds maximum).
+- Graceful degradation: if credentials/config are missing, log a warning and
+  return False. Never crash the runtime because an action is misconfigured.
+- Register the executor in `ori/reasoning/action_dispatcher.py` so it can be
+  referenced by name in skill YAML.
+
+---
+
+### 4. Adding a new reasoning tier
+
+**When:** A new LLM backend needs to be supported.
+**Where:** `ori/reasoning/elevator.py` — add a new tier handler.
+**Pattern:** The elevator's `reason()` method delegates to the appropriate
+backend. Add a new method and register it in the tier selection logic.
+The interface contract is fixed: accept a prompt string, return a
+`ReasoningResult`. The backend is an implementation detail.
+
+---
+
+### 5. Modifying the runtime event loop
+
+**Where:** `ori/runtime.py`
+**When:** Adding a new background task (health check, sync job, cron handler).
+
+```python
+async def run_loop(hal, event_bus, db, config, dispatcher):
+    tasks = [
+        asyncio.create_task(poll_sensor(s, hal, event_bus, db, deduplicator))
+        for s in config.sensors
+    ]
+    tasks += [
+        asyncio.create_task(cron_scheduler(skill, event_bus))
+        for skill in skills if skill.has_cron_trigger
+    ]
+    tasks.append(asyncio.create_task(heartbeat_loop(config, db)))
+    # Add new background tasks here:
+    # tasks.append(asyncio.create_task(your_new_task(...)))
+    await asyncio.gather(*tasks)
+```
+
+**Rules:**
+
+- Every background task must handle its own exceptions. An unhandled exception in a gathered task kills the entire runtime.
+- Use `asyncio.create_task()` for concurrent work. Never `asyncio.run()` inside a running loop.
+- The runtime must log a clear startup message for each task it starts.
+
+---
+
+## Testing conventions
+
+```bash
+# Run everything
+pytest tests/ -v
+
+# Run a specific module
+pytest tests/test_events.py -v
+
+# Run with coverage
+pytest tests/ --cov=ori --cov-report=term-missing
+
+# Skip hardware tests (default on non-Pi platforms)
+pytest tests/ -v -m "not hardware"
+```
+
+**Test file naming:** `tests/test_{module_name}.py` mirroring `ori/{module}.py`.
+
+**Async tests:**
+
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_something_async():
+    result = await some_async_function()
+    assert result is not None
+```
+
+**Hardware skip pattern:**
+
+```python
+import os
+import pytest
+
+skip_if_no_pi = pytest.mark.skipif(
+    not os.path.exists('/dev/gpiomem'),
+    reason="Raspberry Pi GPIO not available"
+)
+
+skip_if_no_i2c = pytest.mark.skipif(
+    not os.path.exists('/dev/i2c-1'),
+    reason="I2C bus not available"
+)
+
+@skip_if_no_pi
+async def test_gpio_adapter():
+    ...
+```
+
+**Mocking hardware in unit tests:**
+
+```python
+from unittest.mock import AsyncMock, patch
+
+async def test_adapter_without_hardware():
+    with patch('ori.hal.i2c_adapter.smbus2') as mock_smbus:
+        mock_smbus.SMBus.return_value.read_i2c_block_data.return_value = [0x60, 0x00]
+        adapter = I2CAdapter()
+        await adapter.connect({'address': 0x48, 'channel': 0, 'sensor_type': 'ads1115_current'})
+        reading = await adapter.read('test-sensor')
+        assert reading.sensor_type == 'current_clamp'
+```
+
+---
+
+## Critical constraints — never violate these
+
+These come from the architecture. Violating them breaks the system in ways
+that are hard to debug.
+
+```
+1. SensorReading and OriEvent are the only allowed data types for sensor data.
+   Never pass raw dicts or primitives between modules.
+
+2. Every trigger in a skill YAML must declare action_tier.
+   The skill loader raises SkillValidationError if it is missing.
+
+3. Tier C actions ALWAYS run the approval workflow.
+   There is no config flag to skip it. If you find yourself writing code
+   to bypass Tier C approval, you are implementing this wrong.
+
+4. Tier D actions NEVER invoke an LLM.
+   bypass_llm: true is set automatically. Do not add LLM calls to Tier D paths.
+
+5. Action executors never raise exceptions.
+   They return False. The runtime must survive a failed action.
+
+6. The event loop is never blocked.
+   time.sleep(), requests.get(), and any synchronous I/O are forbidden
+   in async code paths.
+
+7. SQLite queries are always parameterised.
+   f-string or .format() SQL is a security and correctness error.
+
+8. ori.yaml is never committed to the repository.
+   It is in .gitignore. The example file is ori.yaml.example.
+```
+
+---
+
+## Common mistakes and how to fix them
+
+**"I added a sensor type but it's not appearing in readings"**
+→ Check that the new sensor type is registered in the adapter's
+`SUPPORTED_SENSOR_TYPES` dict and that ori.yaml uses the exact string key.
+
+**"The skill loads but no triggers fire"**
+→ The condition expression failed silently. Check `RuleEngineSafetyError`
+logs and verify the condition only uses allowed builtins.
+
+**"Tier C action executed without waiting for approval"**
+→ The action was incorrectly declared as Tier B in skill.yaml. Check the
+`action_tier` field on the trigger.
+
+**"The runtime crashes when an action fails"**
+→ The action executor is raising an exception instead of returning False.
+Wrap the executor body in `try/except Exception`.
+
+**"Tests pass locally but fail in CI"**
+→ A hardware-dependent test is missing its `@skip_if_no_hardware` decorator.
+Add the appropriate skip mark.
+
+**"Import error on non-Pi platform"**
+→ A hardware library import (`gpiozero`, `smbus2`, `RPi.GPIO`) is at module
+level instead of inside a `try/except ImportError` block.
+
+---
+
+## Before submitting a PR
+
+```bash
+# 1. Tests pass
+pytest tests/ -v
+
+# 2. No import errors on a standard laptop (no Pi required)
+python -c "import ori; print('imports ok')"
+
+# 3. If you added a skill, validate it loads cleanly
+python -c "
+import asyncio
+from ori.skills.loader import SkillLoader
+skills = asyncio.run(SkillLoader().load_one('skills/your-skill-name'))
+print(f'Loaded: {skills.name} v{skills.version}')
+"
+
+# 4. If you added an adapter, confirm it handles the no-hardware case
+python -c "from ori.hal.your_adapter import YourAdapter; print('graceful import ok')"
+```
+
+---
+
+## Where to find things
+
+| I want to...                          | Look in...                           |
+| ------------------------------------- | ------------------------------------ |
+| Add support for a new sensor          | `ori/hal/`                           |
+| Change how events are structured      | `ori/network/events.py`              |
+| Change how events are deduplicated    | `ori/network/deduplicator.py`        |
+| Change reasoning tier selection logic | `ori/reasoning/elevator.py`          |
+| Change how actions are routed by tier | `ori/reasoning/action_dispatcher.py` |
+| Add a new action type                 | `ori/actions/`                       |
+| Change skill loading and validation   | `ori/skills/loader.py`               |
+| Change what gets persisted to SQLite  | `ori/state/store.py`                 |
+| Change device configuration format    | `ori/config.py` + `ori.yaml.example` |
+| Change the main event loop            | `ori/runtime.py`                     |
+| Add a bundled skill                   | `skills/`                            |
+| Understand a design decision          | `CLAUDE.md`                          |
+| Understand the business context       | `CONTRIBUTING.md`                    |
