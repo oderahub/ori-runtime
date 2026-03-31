@@ -90,9 +90,12 @@ class TestProcessDeduplication:
     def test_different_sensor_types_are_independent(self):
         dedup = EventDeduplicator()
         dedup.process(_event(_reading(sensor_type="current_clamp", value=5.0)))
-        assert dedup.process(_event(_reading(sensor_type="voltage", value=5.0))) is not None
+        assert (
+            dedup.process(_event(_reading(sensor_type="voltage", value=5.0)))
+            is not None
+        )
 
-    def test_different_sensor_types_are_independent(self):
+    def test_different_sensor_types_are_independent(self):  # noqa
         dedup = EventDeduplicator()
         r1 = _reading(sensor_type="current_clamp", value=5.0)
         r2 = _reading(sensor_type="voltage", value=5.0)
@@ -179,9 +182,9 @@ class TestStats:
     def test_suppressed_counts_only_duplicates(self):
         dedup = EventDeduplicator()
         r = _reading()
-        dedup.process(_event(r))           # passes → not suppressed
-        dedup.process(_event(r))           # suppressed
-        dedup.process(_event(r))           # suppressed
+        dedup.process(_event(r))  # passes → not suppressed
+        dedup.process(_event(r))  # suppressed
+        dedup.process(_event(r))  # suppressed
         assert dedup.get_stats()["total_suppressed"] == 2
 
     def test_active_fingerprints_count(self):
