@@ -1,0 +1,360 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+import json
+import time
+
+import pytest
+
+from ori.network.events import ActionResult, OriEvent, SensorReading
+from ori.state.store import StateStore
+
+# ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def store(tmp_path):
+    s = StateStore(db_path=str(tmp_path / "test.db"))
+    await s.open()
+    yield s
+    await s.close()
+
+
+def _ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _reading(
+    sensor_id: str = "s1",
+    sensor_type: str = "current_clamp",
+    value: float = 5.0,
+    unit: str = "ampere",
+    timestamp: int | None = None,
+    quality: float = 1.0,
+    metadata: dict | None = None,
+) -> SensorReading:
+    return SensorReading(
+        sensor_id=sensor_id,
+        sensor_type=sensor_type,
+        value=value,
+        unit=unit,
+        timestamp=timestamp or _ms(),
+        quality=quality,
+        metadata=metadata or {},
+    )
+
+
+def _event(reading: SensorReading, device_id: str = "dev-01") -> OriEvent:
+    return OriEvent.from_reading(reading, device_id)
+
+
+def _action_result(
+    action_name: str = "alert_whatsapp",
+    tier: str = "A",
+    executed: bool = True,
+    approved: bool | None = None,
+    action_taken: str = "alert_whatsapp",
+    operator_response: str | None = None,
+    timestamp: int | None = None,
+) -> ActionResult:
+    return ActionResult(
+        action_name=action_name,
+        tier=tier,
+        executed=executed,
+        approved=approved,
+        action_taken=action_taken,
+        timestamp=timestamp or _ms(),
+        operator_response=operator_response,
+    )
+
+
+# ─── open / close / migration ─────────────────────────────────────────────────
+
+
+class TestLifecycle:
+    async def test_open_creates_tables(self, tmp_path):
+        s = StateStore(db_path=str(tmp_path / "lifecycle.db"))
+        await s.open()
+        tables = await s._run(
+            lambda: s._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        )
+        names = {row["name"] for row in tables}
+        await s.close()
+        assert {
+            "sensor_history",
+            "reasoning_log",
+            "action_log",
+            "causal_memory",
+            "skill_state",
+        } <= names
+
+    async def test_open_is_idempotent(self, tmp_path):
+        """Re-opening with the same path should not raise (DDL uses IF NOT EXISTS)."""
+        path = str(tmp_path / "idem.db")
+        s = StateStore(db_path=path)
+        await s.open()
+        await s.close()
+        s2 = StateStore(db_path=path)
+        await s2.open()
+        await s2.close()
+
+
+# ─── append_history / get_history ─────────────────────────────────────────────
+
+
+class TestSensorHistory:
+    async def test_append_and_retrieve(self, store):
+        r = _reading(value=7.3)
+        await store.append_history(_event(r))
+        rows = await store.get_history("s1")
+        assert len(rows) == 1
+        assert rows[0].value == pytest.approx(7.3)
+        assert rows[0].sensor_id == "s1"
+
+    async def test_get_history_respects_limit(self, store):
+        for i in range(10):
+            await store.append_history(_event(_reading(value=float(i))))
+        rows = await store.get_history("s1", limit=5)
+        assert len(rows) == 5
+
+    async def test_get_history_returns_most_recent_first(self, store):
+        base = _ms()
+        for i in range(3):
+            r = _reading(value=float(i), timestamp=base + i * 1000)
+            await store.append_history(_event(r))
+        rows = await store.get_history("s1", limit=10)
+        assert rows[0].value == pytest.approx(2.0)
+        assert rows[1].value == pytest.approx(1.0)
+        assert rows[2].value == pytest.approx(0.0)
+
+    async def test_get_history_filters_by_sensor_id(self, store):
+        await store.append_history(_event(_reading(sensor_id="s1", value=1.0)))
+        await store.append_history(_event(_reading(sensor_id="s2", value=2.0)))
+        rows = await store.get_history("s1")
+        assert all(r.sensor_id == "s1" for r in rows)
+        assert len(rows) == 1
+
+    async def test_metadata_roundtrips(self, store):
+        meta = {"source": "i2c", "channel": 0}
+        r = _reading(metadata=meta)
+        await store.append_history(_event(r))
+        rows = await store.get_history("s1")
+        assert rows[0].metadata == meta
+
+    async def test_skips_event_without_reading(self, store):
+        event = OriEvent(
+            event_id="x",
+            event_type="device.heartbeat",
+            device_id="dev-01",
+            sensor_id="s1",
+            timestamp=_ms(),
+            reading=None,
+        )
+        await store.append_history(event)  # must not raise
+        rows = await store.get_history("s1")
+        assert len(rows) == 0
+
+    async def test_get_history_empty_returns_empty_list(self, store):
+        rows = await store.get_history("nonexistent")
+        assert rows == []
+
+
+# ─── avg_last_n / avg_last_hours ──────────────────────────────────────────────
+
+
+class TestAverages:
+    async def test_avg_last_n_correct(self, store):
+        for v in [2.0, 4.0, 6.0, 8.0]:
+            await store.append_history(_event(_reading(value=v)))
+        avg = await store.avg_last_n("s1", 4)
+        assert avg == pytest.approx(5.0)
+
+    async def test_avg_last_n_partial(self, store):
+        base = _ms()
+        for i, v in enumerate([1.0, 3.0, 5.0]):
+            await store.append_history(
+                _event(_reading(value=v, timestamp=base + i * 1000))
+            )
+        avg = await store.avg_last_n("s1", 2)
+        # last 2 by timestamp are 3.0 and 5.0 → avg 4.0
+        assert avg == pytest.approx(4.0)
+
+    async def test_avg_last_n_no_data(self, store):
+        avg = await store.avg_last_n("s-missing", 10)
+        assert avg is None
+
+    async def test_avg_last_hours_includes_recent(self, store):
+        now = _ms()
+        # reading from 30 minutes ago
+        r = _reading(value=10.0, timestamp=now - 30 * 60 * 1000)
+        await store.append_history(_event(r))
+        avg = await store.avg_last_hours("s1", hours=1)
+        assert avg == pytest.approx(10.0)
+
+    async def test_avg_last_hours_excludes_old(self, store):
+        now = _ms()
+        old = _reading(value=999.0, timestamp=now - 2 * 3_600_000)
+        recent = _reading(value=5.0, timestamp=now - 100)
+        await store.append_history(_event(old))
+        await store.append_history(_event(recent))
+        avg = await store.avg_last_hours("s1", hours=1)
+        assert avg == pytest.approx(5.0)
+
+    async def test_avg_last_hours_no_data(self, store):
+        avg = await store.avg_last_hours("s-missing", hours=24)
+        assert avg is None
+
+
+# ─── action_log ───────────────────────────────────────────────────────────────
+
+
+class TestActionLog:
+    async def test_log_and_retrieve_tier_a(self, store):
+        result = _action_result(tier="A", approved=None)
+        await store.log_action(result, trigger_name="anomalous_draw")
+        log = await store.get_action_log()
+        assert len(log) == 1
+        entry = log[0]
+        assert entry["tier"] == "A"
+        assert entry["executed"] is True
+        assert entry["approved"] is None
+        assert entry["trigger_name"] == "anomalous_draw"
+
+    async def test_log_tier_c_approved(self, store):
+        result = _action_result(
+            tier="C",
+            executed=True,
+            approved=True,
+            action_taken="trip_main_breaker",
+            operator_response="YES",
+        )
+        await store.log_action(result, trigger_name="critical_fault")
+        log = await store.get_action_log()
+        assert log[0]["approved"] is True
+        assert log[0]["operator_response"] == "YES"
+
+    async def test_log_tier_c_rejected(self, store):
+        result = _action_result(
+            tier="C",
+            executed=False,
+            approved=False,
+            action_taken="log_to_dashboard",
+            operator_response="NO",
+        )
+        await store.log_action(result, trigger_name="critical_fault")
+        log = await store.get_action_log()
+        assert log[0]["approved"] is False
+        assert log[0]["executed"] is False
+
+    async def test_get_action_log_limit(self, store):
+        for i in range(10):
+            await store.log_action(
+                _action_result(action_name=f"act_{i}"), trigger_name="t"
+            )
+        log = await store.get_action_log(limit=4)
+        assert len(log) == 4
+
+    async def test_get_action_log_most_recent_first(self, store):
+        base = _ms()
+        for i in range(3):
+            r = _action_result(action_name=f"act_{i}", timestamp=base + i * 1000)
+            await store.log_action(r, trigger_name="t")
+        log = await store.get_action_log()
+        assert log[0]["action_name"] == "act_2"
+
+    async def test_get_action_log_empty(self, store):
+        log = await store.get_action_log()
+        assert log == []
+
+
+# ─── causal_memory ────────────────────────────────────────────────────────────
+
+
+class TestCausalMemory:
+    async def test_store_and_lookup(self, store):
+        await store.store_causal_memory("k1", "resolution-A", 0.9)
+        result = await store.lookup_causal_memory("k1")
+        assert result == "resolution-A"
+
+    async def test_lookup_missing_key_returns_none(self, store):
+        result = await store.lookup_causal_memory("nonexistent")
+        assert result is None
+
+    async def test_lookup_increments_hit_count(self, store):
+        await store.store_causal_memory("k1", "res", 0.8)
+        await store.lookup_causal_memory("k1")
+        await store.lookup_causal_memory("k1")
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT hit_count FROM causal_memory WHERE pattern_key = ?", ("k1",)
+            ).fetchone()
+        )
+        # initial store sets hit_count=1; each lookup increments by 1
+        assert row["hit_count"] == 3
+
+    async def test_store_upserts_on_conflict(self, store):
+        await store.store_causal_memory("k1", "old", 0.5)
+        await store.store_causal_memory("k1", "new", 0.95)
+        result = await store.lookup_causal_memory("k1")
+        assert result == "new"
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT confidence FROM causal_memory WHERE pattern_key = ?", ("k1",)
+            ).fetchone()
+        )
+        assert row["confidence"] == pytest.approx(0.95)
+
+
+# ─── skill_state ──────────────────────────────────────────────────────────────
+
+
+class TestSkillState:
+    async def test_set_and_get(self, store):
+        await store.set_skill_state("energy-anomaly-detector", "last_alert_ts", "12345")
+        value = await store.get_skill_state("energy-anomaly-detector", "last_alert_ts")
+        assert value == "12345"
+
+    async def test_get_missing_key_returns_none(self, store):
+        value = await store.get_skill_state("no-skill", "no-key")
+        assert value is None
+
+    async def test_set_overwrites_existing(self, store):
+        await store.set_skill_state("skill-x", "counter", "1")
+        await store.set_skill_state("skill-x", "counter", "42")
+        value = await store.get_skill_state("skill-x", "counter")
+        assert value == "42"
+
+    async def test_different_skills_isolated(self, store):
+        await store.set_skill_state("skill-a", "k", "value-a")
+        await store.set_skill_state("skill-b", "k", "value-b")
+        assert await store.get_skill_state("skill-a", "k") == "value-a"
+        assert await store.get_skill_state("skill-b", "k") == "value-b"
+
+    async def test_json_value_roundtrip(self, store):
+        payload = json.dumps({"threshold": 8.2, "enabled": True})
+        await store.set_skill_state("skill-x", "cfg", payload)
+        raw = await store.get_skill_state("skill-x", "cfg")
+        assert json.loads(raw) == {"threshold": 8.2, "enabled": True}
+
+    async def test_updated_at_advances_on_overwrite(self, store):
+        await store.set_skill_state("skill-x", "k", "v1")
+        row1 = await store._run(
+            lambda: store._conn.execute(
+                "SELECT updated_at FROM skill_state WHERE skill_name=? AND key=?",
+                ("skill-x", "k"),
+            ).fetchone()
+        )
+        # Ensure at least 1 ms passes
+        import asyncio
+
+        await asyncio.sleep(0.005)
+        await store.set_skill_state("skill-x", "k", "v2")
+        row2 = await store._run(
+            lambda: store._conn.execute(
+                "SELECT updated_at FROM skill_state WHERE skill_name=? AND key=?",
+                ("skill-x", "k"),
+            ).fetchone()
+        )
+        assert row2["updated_at"] >= row1["updated_at"]
