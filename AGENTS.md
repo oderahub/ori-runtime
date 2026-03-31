@@ -19,7 +19,7 @@ autonomous actions based on LLM reasoning. It runs offline on a Raspberry Pi.
 
 The key concept that every contributor must understand before touching code:
 
-```
+```text
 Ori is NOT a monitoring system.
 Ori is an agent that reasons about physical signals and acts on them.
 
@@ -37,7 +37,7 @@ wrong direction.
 
 ## Repository layout
 
-```
+```text
 ori/                    Python package — the runtime
 ├── hal/                Layer 1: hardware adapters
 ├── network/            Layer 2: event bus, deduplication, data types
@@ -113,12 +113,14 @@ class NewProtocolAdapter(BaseAdapter):
 - Never raise anything except `AdapterConnectionError` or `AdapterTimeoutError`
 - Always set `metadata['source']` to the protocol name
 - Add `@pytest.mark.skipif` to all tests that require real hardware:
+
   ```python
   skip_if_no_hardware = pytest.mark.skipif(
       not os.path.exists('/dev/i2c-1'),
       reason="Hardware not available"
   )
   ```
+
 - Register the adapter in `ori/config.py` protocol map so ori.yaml can
   reference it by name
 
@@ -345,7 +347,7 @@ async def test_adapter_without_hardware():
 These come from the architecture. Violating them breaks the system in ways
 that are hard to debug.
 
-```
+```text
 1. SensorReading and OriEvent are the only allowed data types for sensor data.
    Never pass raw dicts or primitives between modules.
 
@@ -422,6 +424,10 @@ print(f'Loaded: {skills.name} v{skills.version}')
 
 # 4. If you added an adapter, confirm it handles the no-hardware case
 python -c "from ori.hal.your_adapter import YourAdapter; print('graceful import ok')"
+
+# 5. Verify the license header is present on every new Python file
+grep -rL "SPDX-License-Identifier: Apache-2.0" ori/ tests/ --include="*.py"
+# Output should be empty. Any file listed is missing the header.
 ```
 
 ---

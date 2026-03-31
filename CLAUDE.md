@@ -34,7 +34,7 @@ physical system runs on, monetised through ori-cloud and enterprise features.
 
 ## Architecture: Six Layers
 
-```
+```text
 Layer 6  Business      ori-cloud · ori-dashboard · fleet management
 Layer 5  Application   Skills · Skills Hub · Skills SDK
 Layer 4  Reasoning + Action  Intelligence Elevator + Action Tier Framework
@@ -52,7 +52,7 @@ the approval model before execution.
 
 ## The Intelligence Elevator (Layer 4) — Reasoning
 
-```
+```text
 Tier 1  RULE ENGINE    microseconds  always available  safety-critical + Tier D actions
 Tier 2  LOCAL SLM      3-8 seconds   offline-capable   most everyday reasoning
 Tier 3  GATEWAY LLM    1-3 seconds   LAN required      cross-device reasoning
@@ -73,7 +73,7 @@ a glorified dashboard. Every action the runtime can take is classified into one
 of four tiers. The tier determines whether the action fires autonomously, whether
 it requires operator approval, and whether it can be overridden.
 
-```
+```text
 Tier A  INFORMATIONAL        Always autonomous. No approval. No override.
         WhatsApp alerts, SMS, dashboard logs, reasoning logs.
         These ARE agent actions. When Ori sends a reasoned WhatsApp message,
@@ -99,7 +99,7 @@ Tier D  SAFETY-CRITICAL      Always autonomous. Highest priority. Overrides all.
 
 **The complete decision tree:**
 
-```
+```text
 Sensor reading arrives
     │
     ▼
@@ -197,7 +197,7 @@ class ReasoningResult:
 
 ## Directory Structure
 
-```
+```bash
 ori/
 ├── CLAUDE.md
 ├── README.md
@@ -277,7 +277,7 @@ ori/
 
 Follow this sequence exactly. Each module depends on the previous.
 
-```
+```text
 Step 1   ori/network/events.py          ← SensorReading, OriEvent, ActionResult, ReasoningResult
 Step 2   ori/config.py                  ← ori.yaml loader with action_tier support
 Step 3   ori/state/store.py             ← SQLite wrapper + action_log table
@@ -346,7 +346,7 @@ class ActionDispatcher:
 
 The approval message template that appears on the operator's WhatsApp:
 
-```
+```text
 ORI ALERT — Action Required
 Device: {device_id}
 Time: {timestamp}
@@ -532,6 +532,15 @@ logging:
 - Action tiers: always single uppercase letter `'A'`, `'B'`, `'C'`, `'D'`
 - Sensor types: lowercase strings `'temperature'`, `'current'`
 - Event types: dot-separated strings `'sensor.reading'`, `'skill.trigger'`
+
+**Every new Python file must start with these two lines before any imports:**
+
+```text
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+```
+
+Run `ruff check --fix` on every file you create before finishing.
 
 **Error handling:**
 
