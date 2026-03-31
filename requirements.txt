@@ -1,0 +1,8 @@
+pyyaml>=6.0
+paho-mqtt>=2.0
+psutil>=5.9
+pyserial>=3.5
+aiofiles>=23.0
+twilio>=9.0
+python-dotenv>=1.0
+anthropic>=0.28

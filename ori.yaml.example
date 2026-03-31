@@ -1,0 +1,119 @@
+# ori.yaml.example
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to ori.yaml and edit for your device.
+# ori.yaml is gitignored — never commit it.
+#
+# ACTION TIER REFERENCE:
+#   Tier A  INFORMATIONAL   — Always autonomous. Alerts, logs, reports.
+#   Tier B  SOFT PHYSICAL   — Autonomous by default. Power switching, valves.
+#   Tier C  HARD PHYSICAL   — Approval workflow required. Breakers, shutdowns.
+#   Tier D  SAFETY-CRITICAL — Always autonomous. Cannot be overridden.
+# ─────────────────────────────────────────────────────────────────────────────
+
+device:
+  id: energy-monitor-ikeja-01        # unique, no spaces, no special chars
+  name: Ikeja Office Energy Monitor
+  location: Lagos, Nigeria
+  rated_capacity_amps: 10.0          # used for Tier D threshold calculations
+                                     # set this to the actual rated amperage
+                                     # of your main circuit
+
+sensors:
+  # ─── Current clamp on ADS1115 ADC via I2C ───────────────────────────────
+  # SCT-013-030 clips around the main load cable in the distribution board
+  # Non-invasive — no wiring changes required
+  - id: load-current
+    type: current_clamp
+    protocol: i2c
+    address: 0x48                    # ADS1115 default I2C address
+    channel: 0                       # ADS1115 channel A0
+    poll_interval_ms: 1000
+    calibration:
+      sensitivity: 0.1              # SCT-013-030: 1A per 10mV output
+
+  # ─── Grid voltage sensor on ADS1115 channel 1 ───────────────────────────
+  - id: grid-voltage
+    type: voltage
+    protocol: i2c
+    address: 0x48
+    channel: 1
+    poll_interval_ms: 2000
+
+  # ─── Inverter battery state ──────────────────────────────────────────────
+  # Comment out if your inverter does not expose a serial interface
+  - id: inverter-battery
+    type: battery_state
+    protocol: serial
+    port: /dev/ttyUSB0
+    baud_rate: 9600
+    poll_interval_ms: 5000
+
+  # ─── PC/Mac system health (PC-Ori) ──────────────────────────────────────
+  # Uncomment to monitor the host machine — no hardware required
+  # - id: system-cpu
+  #   type: cpu_percent
+  #   protocol: psutil
+  #   poll_interval_ms: 5000
+  #
+  # - id: system-memory
+  #   type: memory_percent
+  #   protocol: psutil
+  #   poll_interval_ms: 10000
+  #
+  # - id: system-temp
+  #   type: cpu_temp
+  #   protocol: psutil
+  #   poll_interval_ms: 10000
+
+
+skills:
+  - name: energy-anomaly-detector
+    version: '0.2.1'
+    config:
+      energy_cost_naira: 225         # N/kWh — update with current rate
+      owner_name: "Ikeja Office"
+      requires_approval_for_soft_actions: false
+      approval_timeout_seconds: 300
+      safe_default_action: log_to_dashboard
+      # secondary_contact_number: "${SECONDARY_WHATSAPP}"
+
+
+reasoning:
+  default_tier: local                # rule | local | gateway | cloud
+  local_model: qwen2.5-0.5b-instruct-q4_k_m
+  model_path: /home/pi/models/       # directory where .gguf model files live
+  offline_fallback: rule             # tier to use when network unavailable
+  escalation_threshold: 0.70        # escalate if confidence below this
+
+
+gateway:
+  enabled: false                     # set true when gateway Pi is on the LAN
+  broker_url: mqtt://192.168.1.10:1883
+
+
+actions:
+  # For Nigeria: use sms as primary (Africa's Talking — no approval required)
+  # For UK/EU:   use whatsapp as primary
+  primary_alert_channel: sms
+
+  whatsapp:
+    enabled: true
+    to_number: "${OWNER_WHATSAPP_NUMBER}"
+
+  sms:
+    enabled: true                    # Africa's Talking — primary for Nigeria
+    to_number: "${OWNER_PHONE_NUMBER}"
+
+  relay:
+    enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
+    gpio_pin: 26                     # BCM pin number connected to relay IN
+    active_high: true
+
+
+logging:
+  level: INFO                        # DEBUG | INFO | WARNING | ERROR
+  file: ori.log
+  max_bytes: 10485760               # 10MB
+  backup_count: 3
+  log_action_decisions: true        # log every action dispatcher decision
+  log_approval_workflow: true       # log Tier C approval requests and responses
