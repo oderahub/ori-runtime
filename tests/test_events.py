@@ -232,6 +232,49 @@ def test_fingerprint_rounds_value_to_one_decimal() -> None:
     assert compute_fingerprint(r1, "dev-01") == compute_fingerprint(r2, "dev-01")
 
 
+def test_fingerprint_different_for_different_sensor_ids() -> None:
+    ts = 1_700_000_000_000
+    r1 = SensorReading(
+        sensor_id="load-current",
+        sensor_type="current_clamp",
+        value=5.0,
+        unit="ampere",
+        timestamp=ts,
+        quality=1.0,
+    )
+    r2 = SensorReading(
+        sensor_id="grid-current",
+        sensor_type="current_clamp",
+        value=5.0,
+        unit="ampere",
+        timestamp=ts,
+        quality=1.0,
+    )
+    assert compute_fingerprint(r1, "dev-01") != compute_fingerprint(r2, "dev-01")
+
+
+def test_fingerprint_same_for_same_sensor_id_within_5_seconds() -> None:
+    base_ts = 1_700_000_000_000
+    r1 = SensorReading(
+        sensor_id="load-current",
+        sensor_type="current_clamp",
+        value=5.0,
+        unit="ampere",
+        timestamp=base_ts,
+        quality=1.0,
+    )
+    r2 = SensorReading(
+        sensor_id="load-current",
+        sensor_type="current_clamp",
+        value=5.0,
+        unit="ampere",
+        timestamp=base_ts + 4_000,  # 4 s later, same 5-second bucket
+        quality=1.0,
+    )
+    assert (r1.timestamp // 5000) == (r2.timestamp // 5000)
+    assert compute_fingerprint(r1, "dev-01") == compute_fingerprint(r2, "dev-01")
+
+
 def test_fingerprint_is_hex_string() -> None:
     ts = 1_700_000_000_000
     reading = SensorReading(

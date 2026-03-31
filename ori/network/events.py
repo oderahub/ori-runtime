@@ -79,9 +79,10 @@ class ActionTier:
 
 
 def compute_fingerprint(reading: SensorReading, device_id: str) -> str:
-    """sha256(device_id + sensor_type + str(round(value, 1)) + str(timestamp // 5000))"""
+    """sha256(device_id + sensor_id + sensor_type + str(round(value, 1)) + str(timestamp // 5000))"""
     raw = (
         device_id
+        + reading.sensor_id
         + reading.sensor_type
         + str(round(reading.value, 1))
         + str(reading.timestamp // 5000)
