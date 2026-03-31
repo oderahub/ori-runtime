@@ -1,0 +1,166 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: pc-system-health
+version: 0.1.0
+author: wasiubakare
+description: >
+  Monitors PC and MacBook health — CPU, memory, storage wear,
+  battery drain, and sleep-blocking processes. Runs on any
+  laptop or server using psutil. No hardware required.
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: cpu_percent
+    protocol: psutil
+  - type: cpu_temp
+    protocol: psutil
+  - type: memory_percent
+    protocol: psutil
+  - type: disk_percent
+    protocol: psutil
+  - type: disk_write_mb
+    protocol: psutil
+  - type: battery_percent
+    protocol: psutil
+  - type: battery_drain_rate
+    protocol: psutil
+  - type: sleep_blocking_processes
+    protocol: psutil
+
+triggers:
+  # ── Tier A: High CPU load ──────────────────────────────────────────────
+  - name: high_cpu
+    condition: "cpu_percent > 90"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
+  # ── Tier A: High memory pressure ──────────────────────────────────────
+  - name: high_memory
+    condition: "memory_percent > 85"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
+  # ── Tier A: Storage nearly full ───────────────────────────────────────
+  - name: disk_almost_full
+    condition: "disk_percent > 90"
+    cooldown_seconds: 3600
+    escalate_to: rule
+    action_tier: A
+
+  # ── Tier A: Abnormal disk write rate ──────────────────────────────────
+  # hooks.py computes write_rate_mb_per_min from disk_write_mb delta
+  - name: abnormal_disk_writes
+    condition: "write_rate_mb_per_min > 50"
+    cooldown_seconds: 300
+    escalate_to: local_slm
+    action_tier: A
+
+  # ── Tier A: Sleep drain detected on wake ──────────────────────────────
+  - name: excessive_sleep_drain
+    condition: "battery_drain_rate > 5.0"
+    cooldown_seconds: 3600
+    escalate_to: local_slm
+    action_tier: A
+
+  # ── Tier A: Processes blocking sleep ──────────────────────────────────
+  - name: sleep_blocked
+    condition: "sleep_blocking_processes > 0"
+    cooldown_seconds: 1800
+    escalate_to: local_slm
+    action_tier: A
+
+  # ── Tier D: CPU overheating — safety critical ─────────────────────────
+  - name: cpu_overheating
+    condition: "cpu_temp > 90 and cpu_temp_quality > 0"
+    bypass_llm: true
+    action_tier: D
+    cooldown_seconds: 0
+
+prompts:
+  high_cpu: |
+    CPU usage: {cpu_percent}%
+    Duration above 90%: sustained (triggered cooldown)
+    Memory: {memory_percent}%
+    Time: {time}
+
+    What is most likely causing this CPU spike?
+    Is this harmful? What should the user do?
+    Answer in 2-3 plain sentences.
+
+  high_memory: |
+    Memory usage: {memory_percent}%
+    CPU: {cpu_percent}%
+    Time: {time}
+
+    What is most likely consuming this memory?
+    Should the user be concerned? What action is recommended?
+    Answer in 2-3 plain sentences.
+
+  disk_almost_full: |
+    Disk usage: {disk_percent}% full.
+    What should the user do to free space?
+    Name 2-3 specific locations to check first.
+    Answer in 2-3 plain sentences.
+
+  abnormal_disk_writes: |
+    Disk write rate: {write_rate_mb_per_min:.1f} MB per minute.
+    Normal baseline: {history.avg_1h('write_rate_mb_per_min'):.1f} MB per minute.
+    Current rate is {write_rate_ratio:.1f}x the 1-hour average.
+    Time: {time}
+
+    What is most likely causing this write spike?
+    Is the SSD at risk? What should the user check?
+    Answer in 2-3 plain sentences.
+
+  excessive_sleep_drain: |
+    Battery drained {battery_drain_rate:.1f}% per hour during sleep.
+    Normal sleep drain: approximately 0.5-1.5% per hour.
+    Battery remaining: {battery_percent}%.
+    Sleep duration: approximately {elapsed_hours:.1f} hours.
+
+    Is this drain rate abnormal?
+    What is the most likely cause?
+    Should the user shut down instead of sleeping?
+    Answer in 2-3 plain sentences.
+
+  sleep_blocked: |
+    {sleep_blocking_processes} process(es) are preventing proper sleep.
+    Processes: {blocking_process_names}
+    Battery remaining: {battery_percent}%.
+
+    Why would these processes block sleep?
+    Is it safe to let them continue?
+    What should the user do to restore proper sleep behaviour?
+    Answer in 2-3 plain sentences.
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+
+  defaults:
+    high_cpu: [log_to_dashboard]
+    high_memory: [log_to_dashboard]
+    disk_almost_full: [alert_whatsapp, log_to_dashboard]
+    abnormal_disk_writes: [alert_whatsapp, log_to_dashboard]
+    excessive_sleep_drain: [alert_whatsapp, log_to_dashboard]
+    sleep_blocked: [alert_whatsapp, log_to_dashboard]
+    cpu_overheating: [alert_whatsapp, log_to_dashboard]
+
+requirements:
+  min_ram_mb: 128
+  network_required: false
+  min_ori_version: "0.1.0"
+  python_packages:
+    required: [psutil]
+    optional:
+      - package: osx-cpu-temp
+        install: brew install osx-cpu-temp
+        platform: macOS
+        enables: cpu_temp on macOS
