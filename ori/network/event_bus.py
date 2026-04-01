@@ -24,6 +24,11 @@ class EventBus:
     Delivery is direct — handlers are awaited inline inside :meth:`publish`,
     not queued.  Handler exceptions are caught, logged, and never allowed to
     interrupt delivery to other subscribers.
+
+    Skill handlers that perform I/O (LLM calls, network requests, GPIO)
+    must wrap that work in ``asyncio.create_task()`` to avoid blocking
+    delivery to subsequent handlers.  The EventBus dispatches synchronously
+    by design — handlers are responsible for yielding control.
     """
 
     def __init__(self) -> None:
