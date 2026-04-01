@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="ori-runtime-logo.png" alt="Ori Logo" width="500"/>
+  <img src="/docs/ori-runtime-logo.png" alt="Ori Logo" width="500"/>
 
   <h3><strong>Give your devices a brain.</strong></h3>
 
@@ -62,6 +62,8 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ---
 
 ## Architecture
+
+![Ori Runtime Architecture](/docs/architecture.svg)
 
 ```table
 ┌──────────────────────────────────────────────────────────────┐
