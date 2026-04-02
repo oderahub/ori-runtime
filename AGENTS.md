@@ -124,6 +124,22 @@ class NewProtocolAdapter(BaseAdapter):
 - Register the adapter in `ori/config.py` protocol map so ori.yaml can
   reference it by name
 
+SHARED HARDWARE RESOURCES:
+If your adapter accesses a hardware bus that can be shared across
+multiple sensor instances (I2C, SPI), use the reference-counted
+singleton pattern established in ori/hal/i2c_adapter.py.
+
+Module-level dicts for hardware singletons are a permitted exception
+to the no-global-state rule — hardware pins are physical singletons.
+The singleton must:
+
+- Use a threading.Lock for all cache operations
+- Increment a ref count on connect()
+- Decrement and conditionally evict on close()
+- Never call deinit() during eviction if other refs may exist
+- Stay isolated to the adapter module — never expose the cache
+  to layers above the HAL
+
 ---
 
 ### 2. Adding a new skill

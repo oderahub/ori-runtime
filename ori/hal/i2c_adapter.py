@@ -72,6 +72,13 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# ── Shared I2C bus singleton registry ─────────────────────────────────────
+# ARCHITECTURE NOTE: Module-level state is explicitly prohibited by CLAUDE.md.
+# This is a permitted exception: the Raspberry Pi's I2C bus pins are a hardware
+# singleton — there is physically only one I2C-1 bus. This registry mirrors that
+# physical constraint in software using reference counting.
+# INVARIANT: This cache must never be accessed from outside this module.
+# Upper layers (EventBus, runtime, skills) must never reference these dicts.
 _shared_busio_instances: dict[int, Any] = {}
 _shared_busio_refs: dict[int, int] = {}
 _shared_busio_lock = threading.Lock()
