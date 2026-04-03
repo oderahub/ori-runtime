@@ -140,6 +140,25 @@ The singleton must:
 - Stay isolated to the adapter module — never expose the cache
   to layers above the HAL
 
+CIRCUIT BREAKER REQUIREMENT:
+Every adapter that polls hardware must call the circuit breaker methods:
+
+```py
+    def __init__(self):
+        self._cb_init({})  # Phase 1: no-op stubs, Phase 2: full logic
+
+    async def read(self, sensor_id):
+        if not self._cb_allow_read():
+            raise AdapterReadError(f'{self.adapter_name}: circuit open')
+        try:
+            result = await self._do_read(sensor_id)
+            self._cb_record_success()
+            return result
+        except (AdapterReadError, AdapterTimeoutError) as e:
+            self._cb_record_failure()
+            raise
+```
+
 ---
 
 ### 2. Adding a new skill

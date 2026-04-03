@@ -605,6 +605,9 @@ CREATE TABLE IF NOT EXISTS action_log (
 - **No ORM.** Direct sqlite3 with parameterised queries.
 - **No global state.** All state passes explicitly.
 - **No synchronous blocking calls.** Everything is async.
+- **No circuit breaker bypass**. Every adapter subclass must call `_cb_init()` in `connect()`, `_cb_allow_read()` before every `read()`, and
+  `_cb_record_success() / _cb_record_failure()` on each result.
+  The Phase 1 stubs are no-ops — they will activate in Phase 2.
 
 ---
 

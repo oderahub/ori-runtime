@@ -67,6 +67,43 @@ class BaseAdapter(ABC):
         """
         return self._connected
 
+    # ── Circuit-breaker stubs (Phase 2) ───────────────────────────────────────
+    # Adapters call these hooks around every read() so that the Phase 2
+    # circuit-breaker implementation can activate without modifying adapter code.
+    # All stubs are no-ops / safe defaults in Phase 1.
+
+    def _cb_init(self) -> None:
+        """Initialise circuit-breaker state for this adapter instance.
+
+        Called once at the end of a successful :meth:`connect`.  Phase 2 will
+        set up failure counters and state-machine fields here.
+        """
+
+    def _cb_allow_read(self) -> bool:
+        """Return ``True`` if the circuit breaker permits a read attempt.
+
+        Phase 2 will return ``False`` when the breaker is open, causing
+        :meth:`read` to raise :exc:`AdapterReadError` without touching hardware.
+        Always returns ``True`` in Phase 1.
+        """
+        return True
+
+    def _cb_record_success(self) -> None:
+        """Record a successful read with the circuit breaker.
+
+        Phase 2 will use this to transition the breaker from half-open to closed.
+        No-op in Phase 1.
+        """
+
+    def _cb_record_failure(self) -> bool:
+        """Record a failed read with the circuit breaker.
+
+        Returns ``True`` when the breaker has just tripped (Phase 2), so callers
+        can log a single "circuit opened" message.  Always returns ``False`` in
+        Phase 1.
+        """
+        return False
+
     # ── Properties ────────────────────────────────────────────────────────────
 
     @property
