@@ -1,11 +1,13 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import sys
 import textwrap
 
 import pytest
 
+from ori.skills.loader import SkillLoader
 from ori.skills.sandbox import (
     RestrictedImportFinder,
     SkillSecurityError,
@@ -99,3 +101,57 @@ def test_meta_path_not_polluted_after_nonexistent():
     load_hooks_restricted("/no/such/file.py")
     assert len(sys.meta_path) == before_count
     assert not any(isinstance(f, RestrictedImportFinder) for f in sys.meta_path)
+
+
+def test_is_bundled_skill_symlink_resolves_correctly(tmp_path):
+    """_is_bundled_skill returns False when the home path itself is a symlink.
+
+    On macOS (and some Linux setups) os.path.expanduser("~") returns a path
+    like /Users/alice that is itself a symlink to /private/var/...  Without
+    .resolve() on both sides, relative_to() sees mismatched prefixes and
+    wrongly classifies a legitimate community skill as bundled.
+
+    Setup
+    -----
+    real_home/           ← the actual directory on disk
+      .ori/skills/
+        my-community-skill/   ← real skill directory
+
+    symlinked_home  →  real_home   ← simulates the macOS /Users/alice symlink
+
+    expanduser("~") is patched to return symlinked_home (the unresolved path).
+    skill_dir is the REAL path (real_home / .ori / skills / my-community-skill).
+
+    Without resolve(): relative_to() compares real_home prefix against
+      symlinked_home prefix → ValueError → wrongly returns True (bundled).
+    With resolve():    both sides canonicalise to real_home → succeeds →
+      correctly returns False (community skill).
+    """
+    # The real filesystem home directory (no symlinks involved here)
+    real_home = tmp_path / "real_home"
+    skill_dir = real_home / ".ori" / "skills" / "my-community-skill"
+    skill_dir.mkdir(parents=True)
+
+    # A symlink that points to real_home — simulates the macOS /Users/alice → /private/...
+    symlinked_home = tmp_path / "symlinked_home"
+    symlinked_home.symlink_to(real_home)
+
+    loader = SkillLoader()
+
+    # Patch expanduser to return the SYMLINKED path (unresolved), as macOS does
+    original_expanduser = os.path.expanduser
+
+    def patched_expanduser(path):
+        return str(symlinked_home) if path == "~" else original_expanduser(path)
+
+    os.path.expanduser = patched_expanduser
+    try:
+        # skill_dir uses the real (resolved) path — this is the mismatch case
+        result = loader._is_bundled_skill(skill_dir)
+    finally:
+        os.path.expanduser = original_expanduser
+
+    assert result is False, (
+        "A skill under ~/.ori/skills/ must be identified as a community skill "
+        "(False) even when the home path returned by expanduser is a symlink."
+    )

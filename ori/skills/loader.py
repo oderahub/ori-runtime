@@ -370,31 +370,66 @@ class SkillLoader:
         return triggers
 
     def _load_hooks(self, skill_dir: Path) -> Any:
-        """Load ``hooks.py`` from *skill_dir* if present.
-
-        Args:
-            skill_dir: The skill directory.
-
-        Returns:
-            Loaded module, or ``None`` if ``hooks.py`` is absent or fails to import.
-        """
         hooks_path = skill_dir / "hooks.py"
         if not hooks_path.exists():
             return None
+        # SECURITY: Community skills load through the restricted sandbox.
+        # Bundled skills in the main repository (energy-anomaly-detector,
+        # pc-system-health) are reviewed by the core team — they bypass
+        # the sandbox via _is_bundled_skill(). Third-party installed skills
+        # always use the restricted loader.
+        if self._is_bundled_skill(skill_dir):
+            return self._load_hooks_direct(hooks_path)
+        return self._load_hooks_sandboxed(hooks_path)
+
+    def _is_bundled_skill(self, skill_dir: Path) -> bool:
+        # Bundled skills live in the skills/ directory of the repository.
+        # Installed community skills live in ~/.ori/skills/.
+        # A skill is bundled if its path is relative to the project root
+        # (i.e., not under the user's home directory).
+        import os
+        home = Path(os.path.expanduser("~")).resolve()
+        try:
+            skill_dir.resolve().relative_to(home / ".ori" / "skills")
+            return False  # Under ~/.ori/skills/ — community skill
+        except ValueError:
+            return True   # Not under user home — bundled skill
+
+    def _load_hooks_direct(self, hooks_path: Path) -> Any:
+        # Used for core team reviewed bundled skills only.
         try:
             spec = importlib.util.spec_from_file_location(
-                f"ori_skill_{skill_dir.name}_hooks", hooks_path
+                f"ori_skill_{hooks_path.parent.name}_hooks", hooks_path
             )
             if spec is None or spec.loader is None:
                 return None
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            spec.loader.exec_module(module)
             return module
         except Exception:
             logger.exception(
-                "SkillLoader: failed to load hooks.py for skill %s", skill_dir.name
+                "SkillLoader: failed to load hooks.py for %s", hooks_path.parent.name
             )
             return None
+
+    def _load_hooks_sandboxed(self, hooks_path: Path) -> Any:
+        # Used for all community skills installed from the Skills Hub.
+        from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
+        try:
+            module = load_hooks_restricted(str(hooks_path))
+            if module is None:
+                return None
+            logger.info(
+                "SkillLoader: loaded sandboxed hooks for %s",
+                hooks_path.parent.name
+            )
+            return module
+        except SkillSecurityError as exc:
+            logger.error(
+                "SkillLoader: security violation in %s hooks.py: %s",
+                hooks_path.parent.name, exc
+            )
+            return None  # Skill loads but hooks are disabled — safer than refusing entirely
 
     def _make_handler(
         self,
