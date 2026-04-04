@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -95,6 +96,31 @@ class EvalContext:
         return {**self._values, "history": self}
 
 
+def _validate_sensor_value(value: Any, rule_name: str) -> None:
+    """Raise :exc:`RuleEngineSafetyError` if *value* is not a finite number.
+
+    Rejects NaN, ±Inf, and any non-numeric type.  Called before the eval
+    context is constructed so that malformed readings never reach rule
+    expressions.
+    """
+    if not isinstance(value, (int, float)):
+        raise RuleEngineSafetyError(
+            f"Rule {rule_name!r}: sensor value {value!r} is not numeric "
+            f"(got {type(value).__name__}). Refusing to evaluate rules against "
+            "a non-numeric reading."
+        )
+    if math.isnan(value):
+        raise RuleEngineSafetyError(
+            f"Rule {rule_name!r}: sensor value is NaN. "
+            "NaN in a rule expression produces undefined comparisons."
+        )
+    if math.isinf(value):
+        raise RuleEngineSafetyError(
+            f"Rule {rule_name!r}: sensor value is {'Inf' if value > 0 else '-Inf'}. "
+            "Infinite values cannot be safely used in rule expressions."
+        )
+
+
 def _check_safety(condition: str) -> None:
     """Raise :exc:`RuleEngineSafetyError` if *condition* contains forbidden patterns."""
     for pattern in _UNSAFE_PATTERNS:
@@ -163,6 +189,8 @@ class RuleEngine:
         """
         base_ctx: dict[str, Any] = dict(context or {})
         if event.reading is not None:
+            first_rule_name = rules[0].get("name", "<unnamed>") if rules else "<unknown>"
+            _validate_sensor_value(event.reading.value, first_rule_name)
             base_ctx.setdefault("value", event.reading.value)
             base_ctx.setdefault("sensor_id", event.reading.sensor_id)
             base_ctx.setdefault("sensor_type", event.reading.sensor_type)

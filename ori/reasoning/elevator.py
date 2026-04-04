@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ori.network.events import OriEvent, ReasoningResult
-from ori.reasoning.rule_engine import RuleEngine
+from ori.reasoning.rule_engine import RuleEngine, RuleEngineSafetyError
 
 if TYPE_CHECKING:
     pass
@@ -310,6 +310,61 @@ class IntelligenceElevator:
                     response=result.text,
                     confidence=result.confidence,
                     action_tier=result.action_tier,
+                )
+
+        except RuleEngineSafetyError as exc:
+            logger.error("IntelligenceElevator: Safety check blocked reasoning: %s", exc)
+
+            text = (
+                f"Sensor safety check failed: {exc}. "
+                f"Tier D protection for this sensor is suspended until "
+                f"the sensor returns valid readings."
+            )
+
+            result = ReasoningResult(
+                text=text,
+                tier="rule",
+                model="safety_fallback",
+                tokens_used=0,
+                latency_ms=0,
+                confidence=1.0,
+                action_tier="A",
+            )
+
+            synthetic_event = OriEvent(
+                event_type="sensor.invalid_value",
+                event_id=f"syn-{event.event_id}",
+                device_id=event.device_id,
+                sensor_id=event.sensor_id,
+                timestamp=_now_ms(),
+                reading=event.reading
+            )
+
+            actions = []
+            if hasattr(skill, "get_default_actions"):
+                actions = skill.get_default_actions("sensor.invalid_value")
+
+            if not actions:
+                actions = ["alert_whatsapp"]
+                # Dispatch alert_sms if configured
+                available_actions = []
+                if hasattr(skill, "actions") and isinstance(skill.actions, dict):
+                    available_acts = skill.actions.get("available", [])
+                    for a in available_acts:
+                        if isinstance(a, dict):
+                            available_actions.append(a.get("name"))
+                        elif isinstance(a, str):
+                            available_actions.append(a)
+                if "alert_sms" in available_actions:
+                    actions.append("alert_sms")
+
+            context = SkillContext(skill=skill, event=synthetic_event, state_store=state_store)
+            for action in actions:
+                await dispatcher.dispatch(
+                    action=action,
+                    tier=result.action_tier,
+                    context=context,
+                    result=result,
                 )
 
         except Exception:

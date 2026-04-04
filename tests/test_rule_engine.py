@@ -12,6 +12,7 @@ from ori.reasoning.rule_engine import (
     RuleEngine,
     RuleEngineSafetyError,
     RuleResult,
+    _validate_sensor_value,
 )
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -397,3 +398,65 @@ class TestEvalContext:
         rules = [_rule(name="r", condition="uptime_seconds > 3600", action_tier="A")]
         result = engine.evaluate(event, rules, context={"uptime_seconds": 7200})
         assert result.matched is True
+
+
+# ─── _validate_sensor_value ───────────────────────────────────────────────────
+
+
+class TestValidateSensorValue:
+    def test_nan_raises(self):
+        with pytest.raises(RuleEngineSafetyError, match="NaN"):
+            _validate_sensor_value(float("nan"), "overcurrent")
+
+    def test_positive_inf_raises(self):
+        with pytest.raises(RuleEngineSafetyError, match="Inf"):
+            _validate_sensor_value(float("inf"), "overcurrent")
+
+    def test_negative_inf_raises(self):
+        with pytest.raises(RuleEngineSafetyError, match="-Inf"):
+            _validate_sensor_value(float("-inf"), "overcurrent")
+
+    def test_none_raises(self):
+        with pytest.raises(RuleEngineSafetyError, match="not numeric"):
+            _validate_sensor_value(None, "overcurrent")
+
+    def test_string_raises(self):
+        with pytest.raises(RuleEngineSafetyError, match="not numeric"):
+            _validate_sensor_value("8.2", "overcurrent")
+
+    def test_valid_float_passes(self):
+        # Must not raise for any finite float, including zero and negatives
+        _validate_sensor_value(8.2, "overcurrent")
+        _validate_sensor_value(0.0, "overcurrent")
+        _validate_sensor_value(-1.5, "overcurrent")
+
+    def test_valid_int_passes(self):
+        # int is a subtype of numeric — must be accepted
+        _validate_sensor_value(10, "overcurrent")
+
+
+class TestEvaluateRejectsInvalidSensorValue:
+    """evaluate() must raise RuleEngineSafetyError before touching rule expressions."""
+
+    def _event_with_value(self, value) -> OriEvent:
+        reading = SensorReading(
+            sensor_id="load-current",
+            sensor_type="current_clamp",
+            value=value,
+            unit="ampere",
+            timestamp=_ms(),
+            quality=1.0,
+        )
+        return OriEvent.from_reading(reading, "dev-01")
+
+    def test_nan_value_raises_before_eval(self):
+        engine = RuleEngine()
+        rules = [_rule(name="r", condition="value > 5.0")]
+        with pytest.raises(RuleEngineSafetyError, match="NaN"):
+            engine.evaluate(self._event_with_value(float("nan")), rules)
+
+    def test_inf_value_raises_before_eval(self):
+        engine = RuleEngine()
+        rules = [_rule(name="r", condition="value > 5.0")]
+        with pytest.raises(RuleEngineSafetyError, match="Inf"):
+            engine.evaluate(self._event_with_value(float("inf")), rules)

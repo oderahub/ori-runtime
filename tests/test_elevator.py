@@ -337,6 +337,31 @@ class TestReasonAndDispatch:
             )
             await task  # must complete without raising
 
+    async def test_reason_and_dispatch_catches_safety_error_and_dispatches_tier_a(self):
+        """A RuleEngineSafetyError must be caught and routed as a Tier A synthetic event."""
+        from ori.reasoning.rule_engine import RuleEngineSafetyError
+        mock_dispatcher = AsyncMock()
+        elevator = IntelligenceElevator()
+        skill = FakeSkill()
+        # Mock some actions to verify sms inclusion if available
+        skill._actions = {}
+        skill.actions = {"available": [{"name": "alert_sms", "tier": "A"}]}
+
+        with patch.object(elevator, "reason", side_effect=RuleEngineSafetyError("NaN in reading")):
+            await elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
+
+        # It should dispatch Tier A fallback for whatsapp and sms
+        assert mock_dispatcher.dispatch.call_count == 2
+        calls = mock_dispatcher.dispatch.call_args_list
+        actions_called = [call[1]["action"] for call in calls]
+        assert "alert_whatsapp" in actions_called
+        assert "alert_sms" in actions_called
+
+        for call in calls:
+            assert call[1]["tier"] == "A"
+            assert "Sensor safety check failed: NaN in reading" in call[1]["result"].text
+            ctx = call[1]["context"]
+            assert ctx.event.event_type == "sensor.invalid_value"
 
 # ─── SkillContext ─────────────────────────────────────────────────────────────
 
