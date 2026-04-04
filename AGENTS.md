@@ -494,6 +494,10 @@ Violating them creates vulnerabilities that affect physical hardware.
 
 7. Never add postinstall scripts to pyproject.toml that
    fetch from external URLs.
+8. If \_validate_sensor_value raises RuleEngineSafetyError, the
+   calling code must fire a Tier A alert to the operator.
+   A suspended Tier D path is a safety event requiring human
+   awareness. It must never fail silently.
 
 ---
 
