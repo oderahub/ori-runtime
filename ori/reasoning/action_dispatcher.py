@@ -140,7 +140,9 @@ class ActionDispatcher:
         """
         try:
             if tier == ActionTier.SAFETY_CRITICAL:
-                action_result = await self._execute_immediately(action, tier, context)
+                action_result = await asyncio.shield(
+                    self._execute_immediately(action, tier, context)
+                )
 
             elif tier == ActionTier.INFORMATIONAL:
                 action_result = await self._execute_immediately(action, tier, context)
@@ -183,12 +185,26 @@ class ActionDispatcher:
                 )
                 action_result = await self._execute_immediately(action, tier, context)
 
-        except Exception:
-            logger.exception(
-                "ActionDispatcher: unhandled exception dispatching action=%r tier=%r",
-                action,
-                tier,
-            )
+        except (Exception, asyncio.CancelledError) as exc:
+            # asyncio.CancelledError is BaseException, not Exception.
+            # We must catch it explicitly here so that a runtime shutdown
+            # during a Tier D dispatch does not silently abandon the action.
+            # For Tier D specifically, log at CRITICAL level.
+            if tier == ActionTier.SAFETY_CRITICAL:
+                logger.critical(
+                    "ActionDispatcher: Tier D action=%r was interrupted "
+                    "(%s) — physical safety action may not have executed. "
+                    "Manual intervention may be required.",
+                    action,
+                    type(exc).__name__,
+                )
+            else:
+                logger.exception(
+                    "ActionDispatcher: unhandled exception dispatching "
+                    "action=%r tier=%r",
+                    action,
+                    tier,
+                )
             action_result = ActionResult(
                 action_name=action,
                 tier=tier,
@@ -235,10 +251,19 @@ class ActionDispatcher:
                     "logging intent only",
                     action,
                 )
-        except Exception:
-            logger.exception(
-                "ActionDispatcher: executor raised for action=%r", action
-            )
+        except (Exception, asyncio.CancelledError) as exc:
+            if tier == ActionTier.SAFETY_CRITICAL:
+                logger.critical(
+                    "ActionDispatcher: Tier D executor failed for "
+                    "action=%r — %s: %s",
+                    action,
+                    type(exc).__name__,
+                    exc,
+                )
+            else:
+                logger.exception(
+                    "ActionDispatcher: executor raised for action=%r", action
+                )
             executed = False
 
         return ActionResult(

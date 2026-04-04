@@ -626,3 +626,62 @@ class TestUnknownTier:
         result = await d.dispatch("some_action", "X", _context(), _result())
         assert result.executed is True
         assert result.approved is None
+
+
+# ─── Cancellation Shielding & Logging ─────────────────────────────────────────
+
+
+class TestCancellationHandling:
+    async def test_asyncio_shield_prevents_tier_d_abandonment_on_cancellation(self):
+        d = ActionDispatcher()
+        executor_ran = asyncio.Event()
+
+        async def _mock_exec(action, ctx):
+            await asyncio.sleep(0.1)
+            executor_ran.set()
+
+        d.register_executor("emergency_cutoff", _mock_exec)
+
+        task = asyncio.create_task(
+            d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result())
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+        await task
+        # Wait for the shielded task to finish in the background
+        await asyncio.sleep(0.1)
+
+        assert executor_ran.is_set(), "Shielded executor was abandoned"
+
+    async def test_cancelled_error_on_non_tier_d_logs_at_exception_not_critical(self, caplog):
+        import logging
+        d = ActionDispatcher()
+
+        async def _mock_exec(action, ctx):
+            raise asyncio.CancelledError()
+
+        d.register_executor("alert_whatsapp", _mock_exec)
+
+        with caplog.at_level(logging.ERROR):
+            result = await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, _context(), _result())
+
+        assert result.executed is False
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+        assert not any(record.levelno == logging.CRITICAL for record in caplog.records)
+
+    async def test_cancelled_error_on_tier_d_logs_at_critical_level(self, caplog):
+        import logging
+        d = ActionDispatcher()
+
+        async def _mock_exec(action, ctx):
+            raise asyncio.CancelledError()
+
+        d.register_executor("emergency_cutoff", _mock_exec)
+
+        with caplog.at_level(logging.WARNING):
+            result = await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result())
+
+        assert result.executed is False
+        assert any(record.levelno == logging.CRITICAL for record in caplog.records)
+        assert any("Tier D" in record.message for record in caplog.records)
