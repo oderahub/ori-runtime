@@ -467,6 +467,36 @@ grep -rL "SPDX-License-Identifier: Apache-2.0" ori/ tests/ --include="*.py"
 
 ---
 
+## Security Invariants — Never Violate These
+
+These rules apply to any AI coding agent modifying this codebase.
+Violating them creates vulnerabilities that affect physical hardware.
+
+1. Never load community skill hooks with raw importlib.
+   Always use ori.skills.sandbox.load_hooks_restricted().
+   Only use \_load_hooks_direct() for bundled skills in skills/.
+
+2. Never add new modules to \_ALLOWED_IMPORTS in sandbox.py
+   without opening a GitHub issue and getting maintainer approval.
+
+3. Never use string-based pattern matching to validate skill
+   condition expressions. The rule engine's safety check must
+   use AST validation (Phase 2 upgrade — see P2 reference doc).
+
+4. Never interpolate untrusted input (skill names, sensor IDs,
+   operator replies) into LLM prompts without sanitisation.
+
+5. Never store credentials in code, comments, or git-tracked
+   files. All secrets go in .env (gitignored).
+
+6. Never add a GitHub Actions workflow that processes untrusted
+   input (issue titles, PR comments) with shell access.
+
+7. Never add postinstall scripts to pyproject.toml that
+   fetch from external URLs.
+
+---
+
 ## Where to find things
 
 | I want to...                          | Look in...                           |
