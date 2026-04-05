@@ -392,6 +392,7 @@ class ActionDispatcher:
             result=result,
             action=action,
             timeout_seconds=approval_timeout_seconds,
+            device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
         )
 
         # Send approval request
@@ -490,6 +491,7 @@ class ActionDispatcher:
         result: ReasoningResult,
         action: str,
         timeout_seconds: int,
+        device_timezone: str = "Africa/Lagos",
     ) -> str:
         """Format the WhatsApp/SMS approval request message.
 
@@ -499,14 +501,20 @@ class ActionDispatcher:
             result: The reasoning result with text and confidence.
             action: The proposed action name.
             timeout_seconds: Auto-cancel window.
+            device_timezone: IANA timezone name for local time display
+                (e.g. ``"Africa/Lagos"``).  Defaults to WAT so operators in
+                Nigeria see their local time, not UTC.
 
         Returns:
-            Formatted approval message string.
+            Formatted approval message string matching the README template.
         """
-        dt = datetime.datetime.fromtimestamp(
-            timestamp_ms / 1000, tz=datetime.timezone.utc
-        )
-        formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(device_timezone or "Africa/Lagos")
+        dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=tz)
+        formatted_time = dt.strftime("%A %H:%M")  # e.g. "Wednesday 14:32"
+
+        observation = result.text
+        reasoning = result.reasoning if result.reasoning else result.text
 
         return (
             f"ORI ALERT — Action Required\n"
@@ -514,7 +522,10 @@ class ActionDispatcher:
             f"Time: {formatted_time}\n"
             f"\n"
             f"OBSERVATION:\n"
-            f"{result.text}\n"
+            f"{observation}\n"
+            f"\n"
+            f"REASONING:\n"
+            f"{reasoning}\n"
             f"\n"
             f"PROPOSED ACTION:\n"
             f"{action}\n"
