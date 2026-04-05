@@ -1,0 +1,189 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for ori/actions/relay.py.
+
+gpiozero is not available on developer machines or CI.  All tests run
+in simulation mode — the skip_if_no_pi fixture gates any future tests
+that require real hardware.
+"""
+
+import sys
+
+import pytest
+
+from ori.actions.relay import RelayAction
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def skip_if_no_pi():
+    """Skip the test if gpiozero is not importable (non-Pi platform)."""
+    try:
+        import gpiozero  # type: ignore[import-untyped]  # noqa: F401
+    except ImportError:
+        pytest.skip("gpiozero not available — Pi hardware required")
+
+
+@pytest.fixture
+async def relay() -> RelayAction:
+    """A RelayAction already connected in simulation mode."""
+    r = RelayAction()
+    await r.connect(gpio_pin=26)
+    return r
+
+
+# ── connect() ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_connect_sets_connected():
+    r = RelayAction()
+    assert not r._connected
+    await r.connect(gpio_pin=26)
+    assert r._connected
+
+
+@pytest.mark.asyncio
+async def test_connect_enters_simulation_mode_without_gpiozero(monkeypatch):
+    """Remove gpiozero from sys.modules to force simulation mode."""
+    monkeypatch.setitem(sys.modules, "gpiozero", None)
+    r = RelayAction()
+    await r.connect(gpio_pin=26)
+    assert r._simulated is True
+    assert r._device is None
+
+
+@pytest.mark.asyncio
+async def test_connect_stores_pin_and_active_high():
+    r = RelayAction()
+    await r.connect(gpio_pin=17, active_high=False)
+    assert r._pin == 17
+    assert r._active_high is False
+
+
+# ── is_active initial state ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_is_active_false_before_connect():
+    r = RelayAction()
+    assert r.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_is_active_false_after_connect(relay):
+    assert relay.is_active is False
+
+
+# ── trigger() ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_trigger_returns_true(relay):
+    ok = await relay.trigger()
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_trigger_activates_relay(relay):
+    await relay.trigger()
+    assert relay.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_trigger_with_duration_releases_relay(relay):
+    ok = await relay.trigger(duration_seconds=0.0)
+    assert ok is True
+    assert relay.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_latch_stays_active(relay):
+    """duration_seconds=None latches the relay — is_active remains True."""
+    await relay.trigger(duration_seconds=None)
+    assert relay.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_trigger_returns_false_before_connect():
+    r = RelayAction()
+    ok = await r.trigger()
+    assert ok is False
+
+
+# ── release() ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_release_returns_true(relay):
+    await relay.trigger()
+    ok = await relay.release()
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_release_deactivates_relay(relay):
+    await relay.trigger()
+    assert relay.is_active is True
+    await relay.release()
+    assert relay.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_release_returns_false_before_connect():
+    r = RelayAction()
+    ok = await r.release()
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_release_idempotent(relay):
+    """Releasing an already-inactive relay must succeed."""
+    assert relay.is_active is False
+    ok = await relay.release()
+    assert ok is True
+    assert relay.is_active is False
+
+
+# ── trigger / release cycle ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_multiple_trigger_release_cycles(relay):
+    for _ in range(3):
+        await relay.trigger()
+        assert relay.is_active is True
+        await relay.release()
+        assert relay.is_active is False
+
+
+# ── skip_if_no_pi guard ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_real_gpio_skipped_without_pi(skip_if_no_pi):
+    """This test body only runs on a real Pi with gpiozero installed."""
+    r = RelayAction()
+    await r.connect(gpio_pin=26)
+    assert r._simulated is False  # would fail in sim mode — skip guards it
+
+
+# ── Pin validation ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_connect_rejects_invalid_pin():
+    """GPIO pin 45 is outside the BCM 2-27 range — must raise ValueError."""
+    r = RelayAction()
+    with pytest.raises(ValueError, match="BCM range"):
+        await r.connect(gpio_pin=45)
+
+
+@pytest.mark.asyncio
+async def test_connect_rejects_pin_zero():
+    """GPIO pin 0 is reserved for I2C ID EEPROM — not valid for relay use."""
+    r = RelayAction()
+    with pytest.raises(ValueError, match="BCM range"):
+        await r.connect(gpio_pin=0)
