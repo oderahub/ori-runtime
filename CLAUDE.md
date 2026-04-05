@@ -590,6 +590,50 @@ CREATE TABLE IF NOT EXISTS action_log (
 
 ---
 
+## Platform and Hardware Notes
+
+**HAL adapters degrade gracefully on non-Pi hardware.**
+
+On non-Pi platforms (developer laptops, CI, cloud servers), hardware
+libraries like `gpiozero`, `smbus2`, and `RPi.bme280` are unavailable.
+Every HAL adapter guards its imports with `try/except ImportError` and
+enters simulation mode when the library is missing:
+
+- `connect()` succeeds and logs a WARNING
+- `read()` returns simulated or cached values
+- No hardware is touched
+
+This is intentional. It allows the full reasoning pipeline, EventBus,
+StateStore, and action dispatcher to be exercised in tests and on
+developer machines without a Pi. The 5 skipped tests in the suite
+require a real Pi with `gpiozero` installed.
+
+**On non-Pi hardware, I2C and serial adapters run in simulation mode.**
+If `protocol: i2c` or `protocol: serial` appears in ori.yaml on a
+machine without the Pi hardware libraries, `_make_adapter()` returns
+the adapter successfully, `connect()` logs a WARNING and sets
+`_simulated = True`, and all subsequent `read()` calls return
+simulated values. This is not a bug — it is the same path used in
+all HAL tests.
+
+**The supported protocols on a production Pi are:**
+
+- `psutil` — system metrics, no additional hardware required
+- `i2c` — requires `smbus2`, `gpiozero`, and sensor-specific libraries
+- `serial` — requires `pyserial` and a connected RS485/Modbus device
+
+Any other protocol in ori.yaml raises `ConfigValidationError` at
+startup before the event loop begins.
+
+**Relay wiring safety:**
+Always use Normally Closed (NC) relay terminals. NC wiring means the
+load is disconnected when the relay is de-energised. Power loss or
+an Ori crash defaults the system to the safe state without software
+intervention. Never use Normally Open (NO) terminals for any load
+that must be de-energised on failure.
+
+---
+
 ## What NOT To Do
 
 - **No monitoring-only mindset.** Never describe Ori as "monitoring and alerting."
