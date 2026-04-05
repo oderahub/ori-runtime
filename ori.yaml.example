@@ -17,6 +17,9 @@ device:
   rated_capacity_amps: 10.0          # used for Tier D threshold calculations
                                      # set this to the actual rated amperage
                                      # of your main circuit
+  timezone: Africa/Lagos             # IANA timezone for Tier C approval messages
+                                     # operators see local time, not UTC
+                                     # e.g. Africa/Lagos, Europe/London, America/New_York
 
 sensors:
   # ─── Current clamp on ADS1115 ADC via I2C ───────────────────────────────

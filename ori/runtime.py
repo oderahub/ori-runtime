@@ -125,6 +125,7 @@ class OriRuntime:
                 "secondary_contact": _secondary_contact,
                 "approval_timeout_seconds": _approval_timeout,
                 "primary_alert_channel": config.actions.primary_alert_channel,
+                "device_timezone": config.device.timezone,
             },
         )
 

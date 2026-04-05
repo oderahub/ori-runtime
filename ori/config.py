@@ -33,6 +33,7 @@ class DeviceConfig:
     name: str
     location: str
     rated_capacity_amps: float = 10.0
+    timezone: str = "Africa/Lagos"
 
 
 @dataclass
@@ -197,6 +198,7 @@ def _parse_device(data: Any) -> DeviceConfig:
         name=_require_str(data, "name", "device"),
         location=_require_str(data, "location", "device"),
         rated_capacity_amps=float(data.get("rated_capacity_amps", 10.0)),
+        timezone=str(data.get("timezone", "Africa/Lagos")),
     )
 
 
