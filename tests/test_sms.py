@@ -195,6 +195,7 @@ async def test_send_never_raises(monkeypatch):
 @pytest.mark.asyncio
 async def test_listen_for_response_returns_none(monkeypatch):
     monkeypatch.setenv("AT_API_KEY", "key")
+    monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub())
     action = SMSAction()
     result = await action.listen_for_response("+2340000000000", timeout_seconds=30)
     assert result is None
@@ -205,6 +206,7 @@ async def test_listen_for_response_does_not_block(monkeypatch):
     """Stub must return immediately — no sleeping or polling."""
     import time
     monkeypatch.setenv("AT_API_KEY", "key")
+    monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub())
     action = SMSAction()
     start = time.monotonic()
     await action.listen_for_response("+234000", timeout_seconds=300)
