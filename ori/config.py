@@ -70,6 +70,8 @@ class GatewayConfig:
 @dataclass
 class ActionChannelConfig:
     primary_alert_channel: str  # 'sms' | 'whatsapp'
+    operator_contact: str = ""  # phone number for Tier C approvals and emergency SMS
+    secondary_contact: str = ""  # escalation contact if operator doesn't respond
     whatsapp: dict = field(default_factory=dict)
     sms: dict = field(default_factory=dict)
     relay: dict = field(default_factory=dict)
@@ -323,6 +325,8 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
 
     return ActionChannelConfig(
         primary_alert_channel=primary,
+        operator_contact=str(data.get("operator_contact") or ""),
+        secondary_contact=str(data.get("secondary_contact") or ""),
         whatsapp=data.get("whatsapp") or {},
         sms=data.get("sms") or {},
         relay=relay,

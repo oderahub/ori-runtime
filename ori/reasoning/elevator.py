@@ -134,9 +134,11 @@ class IntelligenceElevator:
         self,
         local_llm: Any = None,
         rule_engine: RuleEngine | None = None,
+        config: Any = None,
     ) -> None:
         self._local_llm = local_llm
         self._rule_engine = rule_engine or RuleEngine()
+        self._config = config  # ReasoningConfig from ori.yaml; None in test environments
 
     # ── Public API ────────────────────────────────────────────────────────────
 

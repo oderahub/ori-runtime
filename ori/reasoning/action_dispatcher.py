@@ -86,6 +86,9 @@ class ActionDispatcher:
         self._config: dict = config or {}
         self._logger_action = LoggerAction()
         self._executors: dict[str, Any] = {
+            # Built-in fallback for test environments.
+            # OriRuntime.start() overwrites this with a closure
+            # that has the real config.device.id from the deployment.
             "log_to_dashboard": self._log_to_dashboard_executor,
         }
 
