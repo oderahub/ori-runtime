@@ -23,6 +23,8 @@ ENV/
 # Ori runtime
 ori.yaml
 *.db
+*.db-shm
+*.db-wal
 *.log
 models/
 *.gguf
