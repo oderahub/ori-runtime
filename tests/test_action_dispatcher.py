@@ -212,6 +212,40 @@ class TestTierD:
             )
         mock_wf.assert_not_awaited()
 
+    async def test_executor_failure_logs_critical_and_calls_emergency_sms(self):
+        """When a Tier D executor raises, logger.critical fires and
+        _emergency_sms is awaited — _emergency_sms is mocked to avoid
+        real SMS calls."""
+
+        async def _failing_executor(action, context):
+            raise RuntimeError("relay hardware fault")
+
+        d = ActionDispatcher(config={"operator_contact": "+234000000000"})
+        d.register_executor("emergency_cutoff", _failing_executor)
+
+        with (
+            patch.object(d, "_emergency_sms", new=AsyncMock()) as mock_sms,
+            patch("ori.reasoning.action_dispatcher.logger") as mock_logger,
+        ):
+            result = await d.dispatch(
+                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            )
+
+        assert result.executed is False
+
+        # logger.critical must have been called (at least the TIER D FAILED message)
+        critical_messages = [
+            str(call.args) for call in mock_logger.critical.call_args_list
+        ]
+        assert any("TIER D ACTION FAILED" in msg for msg in critical_messages), (
+            f"Expected 'TIER D ACTION FAILED' in critical log calls: {critical_messages}"
+        )
+
+        # _emergency_sms must have been awaited with the action name and device_id
+        mock_sms.assert_awaited_once()
+        call_args = mock_sms.call_args
+        assert call_args.args[0] == "emergency_cutoff"
+
 
 # ─── Tier B — autonomous by default ──────────────────────────────────────────
 

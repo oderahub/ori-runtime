@@ -266,6 +266,20 @@ class ActionDispatcher:
                 )
             executed = False
 
+        if not executed and tier == ActionTier.SAFETY_CRITICAL:
+            logger.critical(
+                "TIER D ACTION FAILED: action=%r could not execute. "
+                "Physical safety action was not taken. "
+                "Manual intervention required immediately.",
+                action,
+            )
+            device_id = (
+                getattr(context.event, "device_id", "unknown")
+                if context and context.event
+                else "unknown"
+            )
+            await self._emergency_sms(action, device_id)
+
         return ActionResult(
             action_name=action,
             tier=tier,
@@ -464,6 +478,40 @@ class ActionDispatcher:
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to send escalation to secondary contact"
+            )
+
+    async def _emergency_sms(self, action: str, device_id: str) -> None:
+        """Last-resort SMS when a Tier D safety action fails to execute.
+
+        Uses :class:`~ori.actions.sms.SMSAction` directly — independent of
+        ``_alert_sender`` so that a misconfigured alert channel does not
+        prevent the emergency notification.  Never raises.
+
+        Args:
+            action: The Tier D action name that failed.
+            device_id: The device on which the failure occurred.
+        """
+        from ori.actions.sms import SMSAction
+
+        try:
+            sms = SMSAction()
+            contact = self._config.get("operator_contact", "")
+            if not contact:
+                logger.critical(
+                    "ActionDispatcher: no operator_contact configured — "
+                    "cannot send emergency SMS for failed Tier D action=%r",
+                    action,
+                )
+                return
+            await sms.send(
+                f"CRITICAL: Ori safety action '{action}' FAILED to execute "
+                f"on device {device_id}. Manual intervention required immediately.",
+                to_number=contact,
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: emergency SMS also failed for action=%r",
+                action,
             )
 
     async def _log_action(
