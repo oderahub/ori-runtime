@@ -612,6 +612,7 @@ class TestApprovalMessageFormat:
             result=_result(text="AC unit drawing 40% above baseline."),
             action="trip_main_breaker",
             timeout_seconds=300,
+            device_timezone="Africa/Lagos",
         )
         assert "dev-lagos-01" in msg
 
@@ -670,6 +671,102 @@ class TestApprovalMessageFormat:
         )
         assert "YES" in msg
         assert "NO" in msg
+
+    def test_contains_observation_and_reasoning_sections(self):
+        """Message must have both OBSERVATION: and REASONING: blocks."""
+        d = ActionDispatcher()
+        msg = d._format_approval_message(
+            device_id="dev-01",
+            timestamp_ms=_ms(),
+            result=_result(text="Overcurrent detected."),
+            action="trip_main_breaker",
+            timeout_seconds=300,
+        )
+        assert "OBSERVATION:" in msg
+        assert "REASONING:" in msg
+
+    def test_reasoning_field_used_when_set(self):
+        """When result.reasoning is non-empty it appears under REASONING:,
+        not result.text."""
+        from ori.network.events import ReasoningResult
+
+        d = ActionDispatcher()
+        result = ReasoningResult(
+            text="Short summary.",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=10,
+            latency_ms=100,
+            confidence=0.9,
+            action_tier="C",
+            reasoning="Detailed explanation of the fault pattern.",
+        )
+        msg = d._format_approval_message(
+            device_id="dev-01",
+            timestamp_ms=_ms(),
+            result=result,
+            action="trip_main_breaker",
+            timeout_seconds=300,
+        )
+        assert "Detailed explanation of the fault pattern." in msg
+        assert "REASONING:" in msg
+
+    def test_timestamp_is_human_readable_day_name(self):
+        """Timestamp must contain a day name (e.g. 'Wednesday'), not 'UTC'."""
+        d = ActionDispatcher()
+        # 1_700_000_000_000 ms = 2023-11-14 22:13:20 UTC = 2023-11-14 23:13 WAT
+        msg = d._format_approval_message(
+            device_id="dev-01",
+            timestamp_ms=1_700_000_000_000,
+            result=_result(),
+            action="a",
+            timeout_seconds=300,
+            device_timezone="Africa/Lagos",
+        )
+        assert "UTC" not in msg
+        days = {
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        }
+        assert any(day in msg for day in days), f"No day name found in: {msg!r}"
+
+    def test_timezone_shifts_day_at_boundary(self):
+        """23:30 UTC on a Monday = 00:30 WAT on a Tuesday — timezone must shift
+        the displayed day, not just the hour."""
+        import datetime
+        from zoneinfo import ZoneInfo
+
+        d = ActionDispatcher()
+        # Find a Monday 23:30 UTC timestamp
+        utc = ZoneInfo("UTC")
+        ZoneInfo("Africa/Lagos")
+        # 2024-01-01 is a Monday
+        monday_2330_utc = datetime.datetime(2024, 1, 1, 23, 30, tzinfo=utc)
+        ts_ms = int(monday_2330_utc.timestamp() * 1000)
+
+        msg_utc = d._format_approval_message(
+            device_id="d",
+            timestamp_ms=ts_ms,
+            result=_result(),
+            action="a",
+            timeout_seconds=300,
+            device_timezone="UTC",
+        )
+        msg_wat = d._format_approval_message(
+            device_id="d",
+            timestamp_ms=ts_ms,
+            result=_result(),
+            action="a",
+            timeout_seconds=300,
+            device_timezone="Africa/Lagos",
+        )
+        assert "Monday" in msg_utc
+        assert "Tuesday" in msg_wat
 
 
 # ─── Unknown tier fallback ────────────────────────────────────────────────────

@@ -349,10 +349,13 @@ The approval message template that appears on the operator's WhatsApp:
 ```text
 ORI ALERT — Action Required
 Device: {device_id}
-Time: {timestamp}
+Time: {day_name} {HH:MM}   ← local time in device.timezone (default: Africa/Lagos)
 
 OBSERVATION:
 {result.text}
+
+REASONING:
+{result.reasoning if set, else result.text}
 
 PROPOSED ACTION:
 {action_description}
