@@ -31,6 +31,7 @@ dependencies = [
     "pyserial>=3.5",
     "aiofiles>=23.0",
     "twilio>=9.0",
+    "africastalking>=1.0",
     "python-dotenv>=1.0",
     "anthropic>=0.28",
 ]
@@ -54,7 +55,7 @@ dev = [
 ]
 
 [project.scripts]
-ori = "ori.cli:main"
+ori-runtime = "ori.runtime:main"
 
 [project.urls]
 Homepage = "https://ori.dev"
