@@ -473,10 +473,10 @@ These rules apply to any AI coding agent modifying this codebase.
 Violating them creates vulnerabilities that affect physical hardware.
 
 1. Never load community skill hooks with raw importlib.
-   Always use ori.skills.sandbox.load_hooks_restricted().
-   Only use \_load_hooks_direct() for bundled skills in skills/.
+   Always use `ori.skills.sandbox.load_hooks_restricted()`.
+   Only use `_load_hooks_direct()` for bundled skills in `skills/`.
 
-2. Never add new modules to \_ALLOWED_IMPORTS in sandbox.py
+2. Never add new modules to `_ALLOWED_IMPORTS` in `sandbox.py`
    without opening a GitHub issue and getting maintainer approval.
 
 3. Never use string-based pattern matching to validate skill
@@ -494,10 +494,15 @@ Violating them creates vulnerabilities that affect physical hardware.
 
 7. Never add postinstall scripts to pyproject.toml that
    fetch from external URLs.
-8. If \_validate_sensor_value raises RuleEngineSafetyError, the
+8. If `_validate_sensor_value` raises `RuleEngineSafetyError`, the
    calling code must fire a Tier A alert to the operator.
    A suspended Tier D path is a safety event requiring human
    awareness. It must never fail silently.
+9. relay.py is intentionally tier-agnostic. `RelayAction.trigger()` and
+   `RelayAction.release()` must only be called through `ActionDispatcher`,
+   never directly from skills, hooks, or any other layer. The Tier D
+   CRITICAL escalation and emergency SMS path in `_execute_immediately()`
+   depends on this contract — direct relay calls bypass it entirely.
 
 ---
 

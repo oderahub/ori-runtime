@@ -72,7 +72,7 @@ class RelayAction:
     def __init__(self) -> None:
         self._pin: int | None = None
         self._active_high: bool = True
-        self._device = None          # gpiozero OutputDevice, or None in sim mode
+        self._device = None  # gpiozero OutputDevice, or None in sim mode
         self._simulated: bool = False
         self._connected: bool = False
         self._sim_state: bool = False  # logical active state used in simulation
@@ -158,7 +158,9 @@ class RelayAction:
                 logger.debug(
                     "RelayAction.trigger [SIM]: GPIO pin %d activated (duration=%s)",
                     self._pin,
-                    f"{duration_seconds}s" if duration_seconds is not None else "latched",
+                    f"{duration_seconds}s"
+                    if duration_seconds is not None
+                    else "latched",
                 )
                 if duration_seconds is not None:
                     await asyncio.sleep(duration_seconds)
@@ -188,9 +190,13 @@ class RelayAction:
             return True
 
         except Exception:
-            logger.exception(
-                "RelayAction.trigger: error on GPIO pin %d", self._pin
-            )
+            # Log at exception level and return False.
+            # IMPORTANT: Tier D escalation (CRITICAL log + emergency SMS) is
+            # the caller's responsibility — ActionDispatcher._execute_immediately()
+            # detects executed=False on SAFETY_CRITICAL tier and escalates.
+            # relay.py is intentionally tier-agnostic. Never call relay actions
+            # directly — always route through ActionDispatcher.
+            logger.exception("RelayAction.trigger: error on GPIO pin %d", self._pin)
             return False
 
     async def release(self) -> bool:
@@ -214,15 +220,17 @@ class RelayAction:
                 return True
 
             self._device.off()
-            logger.info(
-                "RelayAction.release: GPIO pin %d deactivated", self._pin
-            )
+            logger.info("RelayAction.release: GPIO pin %d deactivated", self._pin)
             return True
 
         except Exception:
-            logger.exception(
-                "RelayAction.release: error on GPIO pin %d", self._pin
-            )
+            # Log at exception level and return False.
+            # IMPORTANT: Tier D escalation (CRITICAL log + emergency SMS) is
+            # the caller's responsibility — ActionDispatcher._execute_immediately()
+            # detects executed=False on SAFETY_CRITICAL tier and escalates.
+            # relay.py is intentionally tier-agnostic. Never call relay actions
+            # directly — always route through ActionDispatcher.
+            logger.exception("RelayAction.release: error on GPIO pin %d", self._pin)
             return False
 
     # ── State ─────────────────────────────────────────────────────────────────
