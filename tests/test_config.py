@@ -473,6 +473,35 @@ class TestActionsValidation:
         assert isinstance(cfg.actions.relay["gpio_pin"], int)
         assert cfg.actions.relay["gpio_pin"] == 26
 
+    def test_gpio_pin_out_of_bcm_range_raises(self, tmp_path):
+        """gpio_pin=45 is outside BCM 2-27 — must raise at config load time."""
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              relay:
+                enabled: true
+                gpio_pin: 45
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="gpio_pin=45"):
+            Config.load(yaml_path)
+
 
 # ─── Environment variable expansion ───────────────────────────────────────────
 

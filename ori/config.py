@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
+# BCM GPIO pins valid for relay use on Raspberry Pi 4.
+# Mirrors ori/actions/relay.py::_VALID_BCM_PINS — kept here to avoid a
+# config → actions import.  If the range ever changes, update both.
+_VALID_BCM_PINS: frozenset[int] = frozenset(range(2, 28))
+
 
 class ConfigValidationError(Exception):
     pass
@@ -308,6 +313,13 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
     relay: dict = dict(relay_raw)
     if "gpio_pin" in relay:
         relay["gpio_pin"] = int(relay["gpio_pin"])
+        if relay["gpio_pin"] not in _VALID_BCM_PINS:
+            raise ConfigValidationError(
+                f"actions.relay.gpio_pin={relay['gpio_pin']} is outside the "
+                f"valid BCM range (2-27) for Raspberry Pi 4. "
+                f"Misconfigured pins must be caught at startup, not during "
+                f"a safety action. Check ori.yaml."
+            )
 
     return ActionChannelConfig(
         primary_alert_channel=primary,
