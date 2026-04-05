@@ -138,6 +138,32 @@ class ActionDispatcher:
         Returns:
             :class:`~ori.network.events.ActionResult` describing what happened.
         """
+        # Log autonomous Tier D dispatch to override_log before execution —
+        # a safety-critical action firing without operator approval is itself
+        # an override event that must be auditable.
+        if tier == ActionTier.SAFETY_CRITICAL:
+            _store = (
+                context.state_store
+                if hasattr(context, "state_store") and context.state_store is not None
+                else self._state_store
+            )
+            if _store is not None and hasattr(_store, "log_override"):
+                _device_id = context.event.device_id if context.event else "unknown"
+                try:
+                    await _store.log_override(
+                        trigger_name=context.event.sensor_id if context.event else "",
+                        action=action,
+                        reason="autonomous_tier_d_safety_action",
+                        operator_response=None,
+                        override_type="autonomous_tier_d",
+                        device_id=_device_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "ActionDispatcher: failed to log Tier D override for action=%r",
+                        action,
+                    )
+
         try:
             if tier == ActionTier.SAFETY_CRITICAL:
                 action_result = await asyncio.shield(
@@ -375,6 +401,22 @@ class ActionDispatcher:
             inner = await self._execute_immediately(safe_default_action, tier, context)
             action_taken = inner.action_taken
             executed = inner.executed
+            # Log operator rejection / timeout override to override_log
+            store = (
+                context.state_store
+                if hasattr(context, "state_store") and context.state_store is not None
+                else self._state_store
+            )
+            if store is not None and hasattr(store, "log_override"):
+                device_id = context.event.device_id if context.event else "unknown"
+                await store.log_override(
+                    trigger_name=context.event.sensor_id if context.event else "",
+                    action=action,
+                    reason="timeout" if timed_out else "operator_rejection",
+                    operator_response=operator_response,
+                    override_type="rejection",
+                    device_id=device_id,
+                )
 
         return ActionResult(
             action_name=action,

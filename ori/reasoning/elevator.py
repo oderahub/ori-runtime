@@ -188,6 +188,7 @@ class IntelligenceElevator:
             prompt = self._build_prompt(event, skill)
             try:
                 result = await self._local_llm.reason(prompt)
+                result.prompt = prompt
                 return result
             except Exception:
                 logger.exception(
@@ -304,12 +305,9 @@ class IntelligenceElevator:
             # Persist reasoning result
             if state_store is not None and hasattr(state_store, "log_reasoning"):
                 await state_store.log_reasoning(
+                    result=result,
                     trigger_name=event.sensor_id,
-                    tier_used=result.tier,
-                    prompt="",
-                    response=result.text,
-                    confidence=result.confidence,
-                    action_tier=result.action_tier,
+                    device_id=event.device_id,
                 )
 
         except RuleEngineSafetyError as exc:

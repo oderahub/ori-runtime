@@ -210,6 +210,36 @@ class TestReason:
         assert result.tier == "local_slm"
         assert result.text == "Load is anomalous."
 
+    async def test_local_slm_prompt_attached_to_result(self):
+        """After LLM reasoning, result.prompt is populated with the built prompt."""
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="Load is anomalous.",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=20,
+            latency_ms=500,
+        )
+        elevator = IntelligenceElevator(local_llm=mock_llm)
+        skill = FakeSkill()
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(), skill, None)
+
+        assert result.prompt != ""
+        assert "load-current" in result.prompt  # sensor_id appears in prompt
+
+    async def test_rule_engine_result_has_empty_prompt(self):
+        """Rule engine (Tier D, bypass_llm=True) must leave prompt as empty string."""
+        elevator = IntelligenceElevator()
+        skill = _tier_d_skill()
+
+        result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert result.tier == "rule"
+        assert result.action_tier == "D"
+        assert result.prompt == ""
+
     async def test_local_slm_failure_falls_back_to_stub(self):
         mock_llm = AsyncMock()
         mock_llm.reason.side_effect = RuntimeError("model crashed")

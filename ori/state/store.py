@@ -7,7 +7,7 @@ import sqlite3
 from functools import partial
 from typing import Optional
 
-from ori.network.events import ActionResult, OriEvent, SensorReading
+from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sensor_history (
@@ -25,14 +25,30 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id_ts
     ON sensor_history (sensor_id, timestamp DESC);
 
 CREATE TABLE IF NOT EXISTS reasoning_log (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    trigger_name TEXT    NOT NULL,
-    tier_used    TEXT    NOT NULL,
-    prompt       TEXT    NOT NULL,
-    response     TEXT    NOT NULL,
-    confidence   REAL    NOT NULL,
-    action_tier  TEXT    NOT NULL,
-    timestamp    INTEGER NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_name   TEXT    NOT NULL,
+    tier_used      TEXT    NOT NULL,
+    prompt         TEXT    NOT NULL DEFAULT '',
+    response       TEXT    NOT NULL,
+    confidence     REAL    NOT NULL,
+    action_tier    TEXT    NOT NULL,
+    device_id      TEXT    NOT NULL DEFAULT '',
+    model          TEXT    NOT NULL DEFAULT '',
+    tokens_used    INTEGER NOT NULL DEFAULT 0,
+    latency_ms     INTEGER NOT NULL DEFAULT 0,
+    proposed_action TEXT,
+    timestamp      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS override_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_name      TEXT    NOT NULL,
+    action            TEXT    NOT NULL,
+    reason            TEXT    NOT NULL DEFAULT '',
+    operator_response TEXT,
+    override_type     TEXT    NOT NULL,   -- 'rejection' | 'autonomous_tier_d'
+    device_id         TEXT    NOT NULL DEFAULT '',
+    timestamp         INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS action_log (
@@ -103,6 +119,23 @@ class StateStore:
     def _migrate_sync(self) -> None:
         assert self._conn is not None
         self._conn.executescript(_DDL)
+        # Add columns that may be missing from databases created before this
+        # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
+        # so we catch the OperationalError raised when the column already exists.
+        _new_reasoning_cols = [
+            ("device_id",       "TEXT    NOT NULL DEFAULT ''"),
+            ("model",           "TEXT    NOT NULL DEFAULT ''"),
+            ("tokens_used",     "INTEGER NOT NULL DEFAULT 0"),
+            ("latency_ms",      "INTEGER NOT NULL DEFAULT 0"),
+            ("proposed_action", "TEXT"),
+        ]
+        for col, typedef in _new_reasoning_cols:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE reasoning_log ADD COLUMN {col} {typedef}"
+                )
+            except Exception:
+                pass  # column already exists
         self._conn.commit()
 
     async def _run(self, fn, *args):
@@ -273,6 +306,100 @@ class StateStore:
                 }
             )
         return result
+
+    # ─── reasoning_log ───────────────────────────────────────────────────────
+
+    async def log_reasoning(
+        self,
+        result: ReasoningResult,
+        trigger_name: str,
+        device_id: str,
+    ) -> None:
+        """Persist a :class:`~ori.network.events.ReasoningResult` to reasoning_log."""
+        await self._run(self._log_reasoning_sync, result, trigger_name, device_id)
+
+    def _log_reasoning_sync(
+        self,
+        result: ReasoningResult,
+        trigger_name: str,
+        device_id: str,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO reasoning_log
+                (trigger_name, tier_used, prompt, response, confidence,
+                 action_tier, device_id, model, tokens_used, latency_ms,
+                 proposed_action, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trigger_name,
+                result.tier,
+                result.prompt,
+                result.text,
+                result.confidence,
+                result.action_tier,
+                device_id,
+                result.model,
+                result.tokens_used,
+                result.latency_ms,
+                result.proposed_action,
+                _now_ms(),
+            ),
+        )
+        self._conn.commit()
+
+    # ─── override_log ─────────────────────────────────────────────────────────
+
+    async def log_override(
+        self,
+        trigger_name: str,
+        action: str,
+        reason: str,
+        operator_response: Optional[str],
+        override_type: str,
+        device_id: str,
+    ) -> None:
+        """Persist an operator rejection or autonomous Tier D override."""
+        await self._run(
+            self._log_override_sync,
+            trigger_name,
+            action,
+            reason,
+            operator_response,
+            override_type,
+            device_id,
+        )
+
+    def _log_override_sync(
+        self,
+        trigger_name: str,
+        action: str,
+        reason: str,
+        operator_response: Optional[str],
+        override_type: str,
+        device_id: str,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO override_log
+                (trigger_name, action, reason, operator_response,
+                 override_type, device_id, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trigger_name,
+                action,
+                reason,
+                operator_response,
+                override_type,
+                device_id,
+                _now_ms(),
+            ),
+        )
+        self._conn.commit()
 
     # ─── causal_memory ────────────────────────────────────────────────────────
 

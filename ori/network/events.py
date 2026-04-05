@@ -69,6 +69,7 @@ class ReasoningResult:
     confidence: float = 0.0
     action_tier: str = "A"  # Default: informational only
     proposed_action: str | None = None
+    prompt: str = ""  # LLM prompt used to produce this result; "" for rule engine
 
 
 class ActionTier:

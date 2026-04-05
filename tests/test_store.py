@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from ori.network.events import ActionResult, OriEvent, SensorReading
+from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 from ori.state.store import StateStore
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -358,3 +358,76 @@ class TestSkillState:
             ).fetchone()
         )
         assert row2["updated_at"] >= row1["updated_at"]
+
+
+# ─── reasoning_log ────────────────────────────────────────────────────────────
+
+
+def _reasoning_result(prompt: str = "", confidence: float = 0.9) -> ReasoningResult:
+    return ReasoningResult(
+        text="Anomaly detected.",
+        tier="local_slm",
+        model="qwen2.5",
+        tokens_used=42,
+        latency_ms=150,
+        confidence=confidence,
+        action_tier="A",
+        prompt=prompt,
+    )
+
+
+class TestReasoningLog:
+    async def test_log_reasoning_persists_row(self, store):
+        await store.log_reasoning(
+            result=_reasoning_result(),
+            trigger_name="load-current",
+            device_id="dev-01",
+        )
+        rows = await store._run(
+            lambda: store._conn.execute(
+                "SELECT * FROM reasoning_log"
+            ).fetchall()
+        )
+        assert len(rows) == 1
+
+    async def test_log_reasoning_persists_prompt(self, store):
+        """A non-empty prompt is stored and retrievable."""
+        prompt_text = "Sensor: load-current\nValue: 8.2A\nIs this anomalous?"
+        await store.log_reasoning(
+            result=_reasoning_result(prompt=prompt_text),
+            trigger_name="load-current",
+            device_id="dev-01",
+        )
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT prompt FROM reasoning_log"
+            ).fetchone()
+        )
+        assert row["prompt"] == prompt_text
+
+    async def test_log_reasoning_empty_prompt_stored_as_empty_string(self, store):
+        await store.log_reasoning(
+            result=_reasoning_result(prompt=""),
+            trigger_name="load-current",
+            device_id="dev-01",
+        )
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT prompt FROM reasoning_log"
+            ).fetchone()
+        )
+        assert row["prompt"] == ""
+
+    async def test_log_reasoning_persists_device_id_and_model(self, store):
+        await store.log_reasoning(
+            result=_reasoning_result(),
+            trigger_name="t",
+            device_id="ikeja-01",
+        )
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT device_id, model FROM reasoning_log"
+            ).fetchone()
+        )
+        assert row["device_id"] == "ikeja-01"
+        assert row["model"] == "qwen2.5"
