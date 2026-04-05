@@ -23,6 +23,7 @@ import logging
 import time
 from typing import Any
 
+from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.reasoning.elevator import SkillContext
 
@@ -83,7 +84,10 @@ class ActionDispatcher:
         self._state_store = state_store
         self._alert_sender = alert_sender
         self._config: dict = config or {}
-        self._executors: dict[str, Any] = {}
+        self._logger_action = LoggerAction()
+        self._executors: dict[str, Any] = {
+            "log_to_dashboard": self._log_to_dashboard_executor,
+        }
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -166,9 +170,19 @@ class ActionDispatcher:
 
         try:
             if tier == ActionTier.SAFETY_CRITICAL:
-                action_result = await asyncio.shield(
+                outer_task = asyncio.current_task()
+                if outer_task is not None:
+                    outer_task._is_tier_d = True  # type: ignore[attr-defined]
+                # Create the inner task explicitly so we can mark it too.
+                # asyncio.shield() on a coroutine creates an anonymous task
+                # internally; by creating it ourselves we can tag it so the
+                # runtime shutdown drain finds it via asyncio.all_tasks() even
+                # after the outer task has been cancelled.
+                inner_task = asyncio.ensure_future(
                     self._execute_immediately(action, tier, context)
                 )
+                inner_task._is_tier_d = True  # type: ignore[attr-defined]
+                action_result = await asyncio.shield(inner_task)
 
             elif tier == ActionTier.INFORMATIONAL:
                 action_result = await self._execute_immediately(action, tier, context)
@@ -189,7 +203,9 @@ class ActionDispatcher:
                         approval_timeout_seconds,
                     )
                 else:
-                    action_result = await self._execute_immediately(action, tier, context)
+                    action_result = await self._execute_immediately(
+                        action, tier, context
+                    )
 
             elif tier == ActionTier.HARD_PHYSICAL:
                 # Always approval workflow — no exception, no config override
@@ -243,6 +259,24 @@ class ActionDispatcher:
         await self._log_action(action_result, context)
         return action_result
 
+    # ── Built-in executors ────────────────────────────────────────────────────
+
+    async def _log_to_dashboard_executor(
+        self, action: str, context: SkillContext
+    ) -> None:
+        """Built-in executor for ``log_to_dashboard``.
+
+        Used as the safe default for Tier C timeouts and operator rejections.
+        Delegates to :class:`~ori.actions.logger.LoggerAction` so the fallback
+        path is always auditable even when no external alert channel is wired.
+        """
+        device_id = context.event.device_id if context and context.event else "unknown"
+        self._logger_action.log_override(
+            action=action,
+            override_type="safe_default",
+            device_id=device_id,
+        )
+
     # ── Execution paths ───────────────────────────────────────────────────────
 
     async def _execute_immediately(
@@ -280,8 +314,7 @@ class ActionDispatcher:
         except (Exception, asyncio.CancelledError) as exc:
             if tier == ActionTier.SAFETY_CRITICAL:
                 logger.critical(
-                    "ActionDispatcher: Tier D executor failed for "
-                    "action=%r — %s: %s",
+                    "ActionDispatcher: Tier D executor failed for action=%r — %s: %s",
                     action,
                     type(exc).__name__,
                     exc,

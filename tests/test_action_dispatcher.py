@@ -212,6 +212,27 @@ class TestTierD:
             )
         mock_wf.assert_not_awaited()
 
+    async def test_tier_d_task_is_marked_is_tier_d(self):
+        """The task wrapping a Tier D dispatch must have _is_tier_d=True set
+        so the runtime shutdown drain can identify and await it."""
+        marked: list[bool] = []
+
+        async def _capturing_executor(action, context):
+            task = asyncio.current_task()
+            marked.append(getattr(task, "_is_tier_d", False))
+
+        d = ActionDispatcher()
+        d.register_executor("emergency_cutoff", _capturing_executor)
+
+        task = asyncio.create_task(
+            d.dispatch(
+                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            )
+        )
+        await task
+
+        assert marked == [True]
+
     async def test_executor_failure_logs_critical_and_calls_emergency_sms(self):
         """When a Tier D executor raises, logger.critical fires and
         _emergency_sms is awaited — _emergency_sms is mocked to avoid
@@ -677,7 +698,9 @@ class TestCancellationHandling:
         d.register_executor("emergency_cutoff", _mock_exec)
 
         task = asyncio.create_task(
-            d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result())
+            d.dispatch(
+                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            )
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -688,8 +711,11 @@ class TestCancellationHandling:
 
         assert executor_ran.is_set(), "Shielded executor was abandoned"
 
-    async def test_cancelled_error_on_non_tier_d_logs_at_exception_not_critical(self, caplog):
+    async def test_cancelled_error_on_non_tier_d_logs_at_exception_not_critical(
+        self, caplog
+    ):
         import logging
+
         d = ActionDispatcher()
 
         async def _mock_exec(action, ctx):
@@ -698,7 +724,9 @@ class TestCancellationHandling:
         d.register_executor("alert_whatsapp", _mock_exec)
 
         with caplog.at_level(logging.ERROR):
-            result = await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, _context(), _result())
+            result = await d.dispatch(
+                "alert_whatsapp", ActionTier.INFORMATIONAL, _context(), _result()
+            )
 
         assert result.executed is False
         assert any(record.levelno == logging.ERROR for record in caplog.records)
@@ -706,6 +734,7 @@ class TestCancellationHandling:
 
     async def test_cancelled_error_on_tier_d_logs_at_critical_level(self, caplog):
         import logging
+
         d = ActionDispatcher()
 
         async def _mock_exec(action, ctx):
@@ -714,7 +743,9 @@ class TestCancellationHandling:
         d.register_executor("emergency_cutoff", _mock_exec)
 
         with caplog.at_level(logging.WARNING):
-            result = await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result())
+            result = await d.dispatch(
+                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            )
 
         assert result.executed is False
         assert any(record.levelno == logging.CRITICAL for record in caplog.records)
