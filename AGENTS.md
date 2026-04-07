@@ -469,6 +469,8 @@ grep -rL "SPDX-License-Identifier: Apache-2.0" ori/ tests/ --include="*.py"
 
 ## Security Invariants — Never Violate These
 
+The security invariants below flow directly from the principles in PRINCIPLES.md — specifically Principle 1 (The Lens of Actuation Trust) and Principle 3 (The Lens of Inviolable Safety). Understanding the principles explains why the invariants exist.
+
 These rules apply to any AI coding agent modifying this codebase.
 Violating them creates vulnerabilities that affect physical hardware.
 

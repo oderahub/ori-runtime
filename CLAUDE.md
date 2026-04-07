@@ -30,6 +30,8 @@ physical actions autonomously when configured to do so.
 open-source runtime that becomes the intelligence and action layer every
 physical system runs on, monetised through ori-cloud and enterprise features.
 
+**The design philosophy governing every architectural decision in this codebase is documented in PRINCIPLES.md. Read it before making any structural change.**
+
 ---
 
 ## Architecture: Six Layers
