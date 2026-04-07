@@ -16,7 +16,7 @@
 
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
-Ori is an open-source, offline-first **agentic** runtime that gives physical devices the ability to **reason** about sensor data and take **autonomous physical actions** based on that reasoning. Built on the [Agents of Things (AoT)](https://ieeexplore.ieee.org/document/6920728) concept first documented in a 2013 IEEE paper, Ori is the first production platform that realises that vision with 2026 technology.
+Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **Physical Actuation Trust** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first. No cloud required. Runs on a $55 Raspberry Pi.
 
 ---
 
@@ -48,7 +48,7 @@ or NO to cancel. Auto-cancel in 5 minutes."
 cutoff executed at 14:32." ← Safety. No waiting.
 ```
 
-Ori is not a monitoring system with a language model attached. It is an agent that reasons and acts.
+Ori is not a monitoring system with a language model attached. It is an agent that reasons and acts — and trust is won by proving that human correction permanently alters the machine's future behaviour.
 
 ---
 
