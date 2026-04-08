@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ori.hal.base import AdapterConnectionError, AdapterReadError, AdapterTimeoutError, HardwareCircuitBreaker
+from ori.hal.base import (
+    AdapterConnectionError,
+    AdapterReadError,
+    AdapterTimeoutError,
+    HardwareCircuitBreaker,
+)
 from ori.hal.i2c_adapter import _DEFAULT_SENSITIVITY, I2CAdapter
 
 # ─── Pi guard ─────────────────────────────────────────────────────────────────
