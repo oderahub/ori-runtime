@@ -118,6 +118,13 @@ actions:
     active_high: true
 
 
+hal:
+  circuit_breaker:
+    failure_threshold: 5             # consecutive failures before circuit opens
+    recovery_timeout_s: 300          # seconds to wait before probing (HALF_OPEN)
+    success_threshold: 2             # consecutive successes in HALF_OPEN to close
+
+
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR
   file: ori.log

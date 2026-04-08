@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ori.hal.base import AdapterConnectionError, AdapterReadError, AdapterTimeoutError
+from ori.hal.base import (
+    AdapterConnectionError,
+    AdapterReadError,
+    AdapterTimeoutError,
+    HardwareCircuitBreaker,
+)
 from ori.hal.serial_adapter import (
     SerialAdapter,
     _build_read_request,
@@ -53,6 +58,7 @@ def _connected_adapter(sensor_type: str = "voltage") -> SerialAdapter:
     adapter._port = "/dev/ttyUSB0"
     adapter._timeout = 1.0
     adapter._register = None
+    adapter._breaker = HardwareCircuitBreaker("SerialAdapter", {})
     mock_serial = MagicMock()
     mock_serial.is_open = True
     adapter._serial = mock_serial
@@ -399,14 +405,14 @@ class TestRead:
         adapter._serial.reset_input_buffer = MagicMock()
         adapter._serial.write = MagicMock()
         # Default stub always returns True
-        assert adapter._cb_allow_read() is True
+        assert adapter._breaker._allow_read() is True
         reading = await adapter.read("freq-01")
         assert reading is not None
 
     async def test_circuit_breaker_open_raises_read_error(self):
         adapter = _connected_adapter("voltage")
-        with patch.object(adapter, "_cb_allow_read", return_value=False):
-            with pytest.raises(AdapterReadError, match="circuit breaker"):
+        with patch.object(adapter._breaker, "_allow_read", return_value=False):
+            with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
                 await adapter.read("grid-voltage")
 
     async def test_cb_record_success_called_on_good_read(self):
@@ -415,9 +421,9 @@ class TestRead:
         adapter._serial.reset_input_buffer = MagicMock()
         adapter._serial.write = MagicMock()
 
-        with patch.object(adapter, "_cb_record_success") as mock_success:
-            await adapter.read("freq-01")
-        mock_success.assert_called_once()
+        with patch.object(adapter._breaker, "_record_success") as mock_success:
+            await adapter.read("grid-freq")
+            mock_success.assert_called_once()
 
     async def test_cb_record_failure_called_on_read_error(self):
         adapter = _connected_adapter("voltage")
@@ -425,10 +431,10 @@ class TestRead:
         adapter._serial.reset_input_buffer = MagicMock()
         adapter._serial.write = MagicMock()
 
-        with patch.object(adapter, "_cb_record_failure") as mock_failure:
+        with patch.object(adapter._breaker, "_record_failure") as mock_failure:
             with pytest.raises(AdapterReadError):
                 await adapter.read("grid-voltage")
-        mock_failure.assert_called_once()
+            mock_failure.assert_called_once()
 
 
 # ─── All supported sensor types round-trip ────────────────────────────────────

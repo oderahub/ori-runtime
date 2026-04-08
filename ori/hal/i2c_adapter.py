@@ -13,6 +13,7 @@ from ori.hal.base import (
     AdapterReadError,
     AdapterTimeoutError,
     BaseAdapter,
+    HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
 
@@ -204,6 +205,7 @@ class I2CAdapter(BaseAdapter):
                 f"address 0x{self._address:02X} on bus {self._bus_number}: {exc}"
             ) from exc
 
+        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
         self._connected = True
 
     def _connect_sync(self, sensor_type: str) -> None:
@@ -298,31 +300,31 @@ class I2CAdapter(BaseAdapter):
             sensor_id: Logical sensor id from ``ori.yaml``.
 
         Raises:
-            :exc:`AdapterReadError`: Sensor read failed.
+            :exc:`AdapterReadError`: Sensor read failed or circuit breaker open.
             :exc:`AdapterTimeoutError`: Hardware did not respond within 5 s.
         """
         if not self._connected:
             raise AdapterReadError("I2CAdapter: not connected — call connect() first")
 
-        loop = asyncio.get_running_loop()
-        try:
-            reading = await asyncio.wait_for(
-                loop.run_in_executor(None, partial(self._read_sync, sensor_id)),
-                timeout=5.0,
-            )
-        except asyncio.TimeoutError as exc:
-            raise AdapterTimeoutError(
-                f"I2CAdapter: read timed out for '{self._sensor_type}' "
-                f"(sensor_id={sensor_id})"
-            ) from exc
-        except (AdapterReadError, AdapterTimeoutError):
-            raise
-        except Exception as exc:
-            raise AdapterReadError(
-                f"I2CAdapter: unexpected error reading '{self._sensor_type}': {exc}"
-            ) from exc
-
-        return reading
+        async with self._breaker:
+            loop = asyncio.get_running_loop()
+            try:
+                reading = await asyncio.wait_for(
+                    loop.run_in_executor(None, partial(self._read_sync, sensor_id)),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError as exc:
+                raise AdapterTimeoutError(
+                    f"I2CAdapter: read timed out for '{self._sensor_type}' "
+                    f"(sensor_id={sensor_id})"
+                ) from exc
+            except (AdapterReadError, AdapterTimeoutError):
+                raise
+            except Exception as exc:
+                raise AdapterReadError(
+                    f"I2CAdapter: unexpected error reading '{self._sensor_type}': {exc}"
+                ) from exc
+            return reading
 
     def _read_sync(self, sensor_id: str) -> SensorReading:
         t = self._sensor_type

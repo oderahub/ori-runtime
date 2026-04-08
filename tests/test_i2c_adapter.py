@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ori.hal.base import AdapterConnectionError, AdapterReadError, AdapterTimeoutError
+from ori.hal.base import AdapterConnectionError, AdapterReadError, AdapterTimeoutError, HardwareCircuitBreaker
 from ori.hal.i2c_adapter import _DEFAULT_SENSITIVITY, I2CAdapter
 
 # ─── Pi guard ─────────────────────────────────────────────────────────────────
@@ -54,6 +54,7 @@ def _connected_bme280_adapter() -> I2CAdapter:
     adapter._connected = True
     adapter._sensor_type = "bme280"
     adapter._address = 0x76
+    adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._bus = MagicMock()
     adapter._bme280_params = MagicMock()
     return adapter
@@ -65,6 +66,7 @@ def _connected_ads_adapter(sensor_type: str = "ads1115_current") -> I2CAdapter:
     adapter._sensor_type = sensor_type
     adapter._channel = 0
     adapter._sensitivity = _DEFAULT_SENSITIVITY
+    adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._ads = MagicMock()
     return adapter
 
@@ -73,6 +75,7 @@ def _connected_scd40_adapter() -> I2CAdapter:
     adapter = I2CAdapter()
     adapter._connected = True
     adapter._sensor_type = "scd40"
+    adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._scd4x = MagicMock()
     return adapter
 

@@ -13,6 +13,7 @@ from ori.hal.base import (
     AdapterReadError,
     AdapterTimeoutError,
     BaseAdapter,
+    HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
 
@@ -33,14 +34,14 @@ _FC_READ_HOLDING = 0x03  # Function code: Read Holding Registers
 # Each entry: (start_register, register_count, scale, unit)
 # scale is applied as: value = raw_int * scale
 _SENSOR_MAP: dict[str, tuple[int, int, float, str]] = {
-    "voltage":         (0x0000, 2, 0.1,    "volt"),
-    "current":         (0x0008, 2, 0.01,   "ampere"),
-    "active_power":    (0x0012, 2, 0.1,    "watt"),
-    "apparent_power":  (0x001A, 2, 0.1,    "volt_ampere"),
-    "reactive_power":  (0x0022, 2, 0.1,    "var"),
-    "power_factor":    (0x002A, 1, 0.001,  "ratio"),
-    "frequency":       (0x0046, 1, 0.1,    "hertz"),
-    "energy_kwh":      (0x0100, 2, 0.01,   "kilowatt_hour"),
+    "voltage": (0x0000, 2, 0.1, "volt"),
+    "current": (0x0008, 2, 0.01, "ampere"),
+    "active_power": (0x0012, 2, 0.1, "watt"),
+    "apparent_power": (0x001A, 2, 0.1, "volt_ampere"),
+    "reactive_power": (0x0022, 2, 0.1, "var"),
+    "power_factor": (0x002A, 1, 0.001, "ratio"),
+    "frequency": (0x0046, 1, 0.1, "hertz"),
+    "energy_kwh": (0x0100, 2, 0.01, "kilowatt_hour"),
 }
 
 _SUPPORTED = frozenset(_SENSOR_MAP)
@@ -50,8 +51,8 @@ _DEFAULT_BAUDRATE = 9600
 _DEFAULT_BYTESIZE = 8
 _DEFAULT_PARITY = "N"
 _DEFAULT_STOPBITS = 1
-_DEFAULT_TIMEOUT = 1.0   # seconds
-_DEFAULT_SLAVE_ID = 1    # Modbus slave address
+_DEFAULT_TIMEOUT = 1.0  # seconds
+_DEFAULT_SLAVE_ID = 1  # Modbus slave address
 
 
 def _now_ms() -> int:
@@ -216,8 +217,7 @@ class SerialAdapter(BaseAdapter):
         """
         if not _SERIAL_AVAILABLE:
             raise AdapterConnectionError(
-                "SerialAdapter: 'pyserial' is not installed. "
-                "Run: pip install pyserial"
+                "SerialAdapter: 'pyserial' is not installed. Run: pip install pyserial"
             )
 
         sensor_type = config.get("sensor_type", "")
@@ -231,8 +231,7 @@ class SerialAdapter(BaseAdapter):
         self._port = config.get("port", "")
         if not self._port:
             raise AdapterConnectionError(
-                "SerialAdapter: 'port' is required in sensor config "
-                "(e.g. /dev/ttyUSB0)"
+                "SerialAdapter: 'port' is required in sensor config (e.g. /dev/ttyUSB0)"
             )
 
         self._baudrate = int(config.get("baudrate", _DEFAULT_BAUDRATE))
@@ -254,7 +253,7 @@ class SerialAdapter(BaseAdapter):
                 f"SerialAdapter: failed to open '{self._port}': {exc}"
             ) from exc
 
-        self._cb_init()
+        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
         self._connected = True
 
     def _open_port(self) -> None:
@@ -286,7 +285,7 @@ class SerialAdapter(BaseAdapter):
     # ── Read ──────────────────────────────────────────────────────────────────
 
     async def read(self, sensor_id: str) -> SensorReading:
-        """Send a Modbus RTU FC 0x03 request and return a normalised reading.
+        """Sample the sensor and return a normalised :class:`~ori.network.events.SensorReading`.
 
         Args:
             sensor_id: Logical sensor id from ``ori.yaml``.
@@ -302,57 +301,48 @@ class SerialAdapter(BaseAdapter):
                 "SerialAdapter: not connected — call connect() first"
             )
 
-        if not self._cb_allow_read():
-            raise AdapterReadError(
-                f"SerialAdapter: circuit breaker open for '{self._port}' — "
-                "too many consecutive failures"
+        async with self._breaker:
+            reg, count, scale, unit = _SENSOR_MAP[self._sensor_type]
+            if self._register is not None:
+                reg = self._register
+
+            loop = asyncio.get_running_loop()
+            read_timeout = self._timeout + 1.0  # asyncio guard > serial read timeout
+
+            try:
+                raw = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        partial(self._read_sync, reg, count),
+                    ),
+                    timeout=read_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                raise AdapterTimeoutError(
+                    f"SerialAdapter: read timed out on '{self._port}' "
+                    f"(sensor_type={self._sensor_type})"
+                ) from exc
+            except AdapterReadError:
+                raise
+            except Exception as exc:
+                raise AdapterReadError(
+                    f"SerialAdapter: unexpected error reading '{self._sensor_type}': {exc}"
+                ) from exc
+
+            value = round(raw * scale, 4)
+            return SensorReading(
+                sensor_id=sensor_id,
+                sensor_type=self._sensor_type,
+                value=value,
+                unit=unit,
+                timestamp=_now_ms(),
+                quality=1.0,
+                metadata={
+                    "slave_id": self._slave_id,
+                    "register": reg,
+                    "raw": raw,
+                },
             )
-
-        reg, count, scale, unit = _SENSOR_MAP[self._sensor_type]
-        if self._register is not None:
-            reg = self._register
-
-        loop = asyncio.get_running_loop()
-        read_timeout = self._timeout + 1.0  # asyncio guard > serial read timeout
-
-        try:
-            raw = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    partial(self._read_sync, reg, count),
-                ),
-                timeout=read_timeout,
-            )
-        except asyncio.TimeoutError as exc:
-            self._cb_record_failure()
-            raise AdapterTimeoutError(
-                f"SerialAdapter: read timed out on '{self._port}' "
-                f"(sensor_type={self._sensor_type})"
-            ) from exc
-        except AdapterReadError:
-            self._cb_record_failure()
-            raise
-        except Exception as exc:
-            self._cb_record_failure()
-            raise AdapterReadError(
-                f"SerialAdapter: unexpected error reading '{self._sensor_type}': {exc}"
-            ) from exc
-
-        self._cb_record_success()
-        value = round(raw * scale, 4)
-        return SensorReading(
-            sensor_id=sensor_id,
-            sensor_type=self._sensor_type,
-            value=value,
-            unit=unit,
-            timestamp=_now_ms(),
-            quality=1.0,
-            metadata={
-                "slave_id": self._slave_id,
-                "register": reg,
-                "raw": raw,
-            },
-        )
 
     def _read_sync(self, register: int, count: int) -> int:
         """Send Modbus request and return the raw integer value."""

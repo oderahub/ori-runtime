@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import logging
 import platform
 import re
 import shutil
@@ -10,8 +11,15 @@ from functools import partial
 
 import psutil
 
-from ori.hal.base import AdapterConnectionError, AdapterReadError, BaseAdapter
+from ori.hal.base import (
+    AdapterConnectionError,
+    AdapterReadError,
+    BaseAdapter,
+    HardwareCircuitBreaker,
+)
 from ori.network.events import SensorReading
+
+logger = logging.getLogger(__name__)
 
 # Sensor types handled by this adapter
 _SUPPORTED = frozenset(
@@ -78,6 +86,7 @@ class PsutilAdapter(BaseAdapter):
             )
         self._sensor_id = config.get("sensor_id", "")
         self._sensor_type = sensor_type
+        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
         self._connected = True
 
     async def close(self) -> None:
@@ -91,24 +100,28 @@ class PsutilAdapter(BaseAdapter):
     # ── Read dispatcher ───────────────────────────────────────────────────────
 
     async def read(self, sensor_id: str) -> SensorReading:
-        """Sample the configured sensor type and return a normalised reading.
-
-        Args:
-            sensor_id: Logical sensor id embedded in the returned reading.
-
-        Raises:
-            :exc:`AdapterReadError`: If the underlying psutil call fails
-                unexpectedly.
-        """
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(None, partial(self._read_sync, sensor_id))
-        except (AdapterReadError, AdapterConnectionError):
-            raise
-        except Exception as exc:
-            raise AdapterReadError(
-                f"PsutilAdapter: unexpected error reading '{self._sensor_type}': {exc}"
-            ) from exc
+        """Sample the configured sensor and return a normalised reading."""
+        async with self._breaker:
+            t = self._sensor_type
+            if t == "battery_drain_rate":
+                result = await self._battery_drain_rate_async(sensor_id)
+            elif t == "cpu_temp":
+                result = await self._cpu_temp_async(sensor_id)
+            elif t == "sleep_blocking_process":
+                result = await self._sleep_blocking_async(sensor_id)
+            else:
+                loop = asyncio.get_running_loop()
+                try:
+                    result = await loop.run_in_executor(
+                        None, partial(self._read_sync, sensor_id)
+                    )
+                except (AdapterReadError, AdapterConnectionError):
+                    raise
+                except Exception as exc:
+                    raise AdapterReadError(
+                        f"PsutilAdapter: unexpected error reading '{self._sensor_type}': {exc}"
+                    ) from exc
+            return result
 
     def _read_sync(self, sensor_id: str) -> SensorReading:
         t = self._sensor_type
@@ -122,8 +135,6 @@ class PsutilAdapter(BaseAdapter):
             return self._battery_percent(sensor_id)
         if t == "battery_time_remaining":
             return self._battery_time_remaining(sensor_id)
-        if t == "cpu_temp":
-            raise AdapterReadError("cpu_temp must be read via read_async()")
         if t == "disk_percent":
             return self._disk_percent(sensor_id)
         if t == "disk_write_mb":
@@ -138,34 +149,7 @@ class PsutilAdapter(BaseAdapter):
             return self._net(sensor_id, "sent")
         if t == "net_bytes_recv_mb":
             return self._net(sensor_id, "recv")
-        if t == "battery_drain_rate":
-            # Async; called via run_in_executor so we use asyncio.run in a
-            # thread — but since we're already in an executor we schedule via
-            # a new event loop call.  Instead, expose a direct async path.
-            raise AdapterReadError("battery_drain_rate must be read via read_async()")
-        if t == "sleep_blocking_process":
-            raise AdapterReadError("sleep_blocking_process must be read via read_async()")
         raise AdapterReadError(f"Unknown sensor type: {t}")
-
-    # Override read() for battery_drain_rate to keep it fully async
-    async def read(self, sensor_id: str) -> SensorReading:  # noqa: F811
-        """Sample the configured sensor and return a normalised reading."""
-        t = self._sensor_type
-        if t == "battery_drain_rate":
-            return await self._battery_drain_rate_async(sensor_id)
-        if t == "cpu_temp":
-            return await self._cpu_temp_async(sensor_id)
-        if t == "sleep_blocking_process":
-            return await self._sleep_blocking_async(sensor_id)
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(None, partial(self._read_sync, sensor_id))
-        except (AdapterReadError, AdapterConnectionError):
-            raise
-        except Exception as exc:
-            raise AdapterReadError(
-                f"PsutilAdapter: unexpected error reading '{self._sensor_type}': {exc}"
-            ) from exc
 
     # ── System resources ──────────────────────────────────────────────────────
 
@@ -496,7 +480,9 @@ class PsutilAdapter(BaseAdapter):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "pmset", "-g", "assertions",
+                "pmset",
+                "-g",
+                "assertions",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -533,7 +519,9 @@ class PsutilAdapter(BaseAdapter):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "systemd-inhibit", "--list", "--no-legend",
+                "systemd-inhibit",
+                "--list",
+                "--no-legend",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
