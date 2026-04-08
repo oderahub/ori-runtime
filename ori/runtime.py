@@ -99,7 +99,7 @@ class OriRuntime:
                 )
                 relay_action = None
 
-        # FIX 2: operator_contact is a first-class config field, not assembled from sub-dicts
+        # operator_contact is a first-class config field, not assembled from sub-dicts
         _operator_contact: str = config.actions.operator_contact or ""
         if not _operator_contact:
             logger.warning(
@@ -248,6 +248,9 @@ class OriRuntime:
                 self._heartbeat_loop(config.device.id), name="heartbeat"
             )
         )
+        self._background_tasks.append(
+            asyncio.create_task(self._compaction_loop(), name="compaction")
+        )
 
         # Block here until stop() sets the shutdown event
         await self._shutdown_event.wait()
@@ -393,13 +396,34 @@ class OriRuntime:
             )
         logger.debug("[heartbeat] loop exited cleanly")
 
+    async def _compaction_loop(self) -> None:
+        """Run the SQLite Compaction Pyramid every 5 minutes."""
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=300.0,
+                )
+                break  # shutdown was signalled
+            except asyncio.TimeoutError:
+                pass
+
+            if self._state_store is not None:
+                try:
+                    await self._state_store.compact_history()
+                    logger.debug("[compaction] history compaction complete")
+                except Exception:
+                    logger.exception(
+                        "[compaction] history compaction failed — will retry"
+                    )
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 _PROTOCOL_MAP: dict[str, type] = {
     "psutil": PsutilAdapter,
-    "i2c": None,    # populated lazily to avoid importing hardware libs at module load
+    "i2c": None,  # populated lazily to avoid importing hardware libs at module load
     "serial": None,
 }
 
@@ -423,9 +447,11 @@ def _make_adapter(protocol: str) -> BaseAdapter:
         return PsutilAdapter()
     if protocol == "i2c":
         from ori.hal.i2c_adapter import I2CAdapter
+
         return I2CAdapter()
     # serial
     from ori.hal.serial_adapter import SerialAdapter
+
     return SerialAdapter()
 
 

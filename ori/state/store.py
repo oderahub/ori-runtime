@@ -81,6 +81,39 @@ CREATE TABLE IF NOT EXISTS skill_state (
     updated_at  INTEGER NOT NULL,
     UNIQUE (skill_name, key)
 );
+
+CREATE TABLE IF NOT EXISTS sensor_history_5min (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    UNIQUE(sensor_id, bucket_ms)
+);
+
+CREATE TABLE IF NOT EXISTS sensor_history_hourly (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    UNIQUE(sensor_id, bucket_ms)
+);
+
+CREATE TABLE IF NOT EXISTS sensor_history_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    UNIQUE(sensor_id, bucket_ms)
+);
 """
 
 
@@ -123,10 +156,10 @@ class StateStore:
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
         # so we catch the OperationalError raised when the column already exists.
         _new_reasoning_cols = [
-            ("device_id",       "TEXT    NOT NULL DEFAULT ''"),
-            ("model",           "TEXT    NOT NULL DEFAULT ''"),
-            ("tokens_used",     "INTEGER NOT NULL DEFAULT 0"),
-            ("latency_ms",      "INTEGER NOT NULL DEFAULT 0"),
+            ("device_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("model", "TEXT    NOT NULL DEFAULT ''"),
+            ("tokens_used", "INTEGER NOT NULL DEFAULT 0"),
+            ("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
             ("proposed_action", "TEXT"),
         ]
         for col, typedef in _new_reasoning_cols:
@@ -145,6 +178,85 @@ class StateStore:
             return await loop.run_in_executor(None, partial(fn, *args))
 
     # ─── sensor_history ───────────────────────────────────────────────────────
+
+    async def compact_history(self) -> None:
+        """Compact raw sensor history into time-bucketed averages.
+
+        Call from runtime.py via asyncio.create_task() on a 5-minute
+        schedule using asyncio periodic task pattern.
+        """
+        now_ms = _now_ms()
+        cutoffs = {
+            "raw": now_ms - (48 * 3600 * 1000),  # 48 hours
+            "5min": now_ms - (30 * 86400 * 1000),  # 30 days
+            "hourly": now_ms - (365 * 86400 * 1000),  # 1 year
+        }
+        await self._run(self._compact_sync, cutoffs, now_ms)
+
+    def _compact_sync(self, cutoffs: dict, now_ms: int) -> None:
+        assert self._conn is not None
+        assert cutoffs["raw"] < now_ms - 3600000, (
+            "Clock skew detected: refused to compact history"
+        )
+
+        # 1. Aggregate raw → 5-minute buckets older than 48h
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO sensor_history_5min
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            SELECT sensor_id, sensor_type,
+                   (timestamp / 300000) * 300000 AS bucket_ms,
+                   AVG(value), unit, COUNT(*)
+            FROM sensor_history
+            WHERE timestamp < ?
+            GROUP BY sensor_id, (timestamp / 300000)
+        """,
+            (cutoffs["raw"],),
+        )
+
+        # 2. Delete raw rows older than 48h
+        self._conn.execute(
+            "DELETE FROM sensor_history WHERE timestamp < ?", (cutoffs["raw"],)
+        )
+
+        # 3. Aggregate 5-min → hourly buckets older than 30d
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO sensor_history_hourly
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            SELECT sensor_id, sensor_type,
+                   (bucket_ms / 3600000) * 3600000,
+                   AVG(avg_value), unit, SUM(sample_count)
+            FROM sensor_history_5min
+            WHERE bucket_ms < ?
+            GROUP BY sensor_id, (bucket_ms / 3600000)
+        """,
+            (cutoffs["5min"],),
+        )
+        self._conn.execute(
+            "DELETE FROM sensor_history_5min WHERE bucket_ms < ?", (cutoffs["5min"],)
+        )
+
+        # 4. Aggregate hourly → daily buckets older than 1 year
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO sensor_history_daily
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            SELECT sensor_id, sensor_type,
+                   (bucket_ms / 86400000) * 86400000,
+                   AVG(avg_value), unit, SUM(sample_count)
+            FROM sensor_history_hourly
+            WHERE bucket_ms < ?
+            GROUP BY sensor_id, (bucket_ms / 86400000)
+        """,
+            (cutoffs["hourly"],),
+        )
+        self._conn.execute(
+            "DELETE FROM sensor_history_hourly WHERE bucket_ms < ?",
+            (cutoffs["hourly"],),
+        )
+
+        self._conn.commit()
 
     async def append_history(self, event: OriEvent) -> None:
         """Persist a sensor reading from an OriEvent."""
@@ -230,18 +342,76 @@ class StateStore:
 
     def _avg_last_hours_sync(self, sensor_id: str, hours: int) -> Optional[float]:
         assert self._conn is not None
-        # timestamp column is unix milliseconds
         cutoff_ms = _now_ms() - hours * 3_600_000
+
+        # Weighted average across all tiers to seamlessly span compaction boundaries
         row = self._conn.execute(
             """
-            SELECT AVG(value) AS avg_val
-            FROM sensor_history
-            WHERE sensor_id = ?
-              AND timestamp >= ?
+            SELECT SUM(val * cnt) / SUM(cnt) AS avg_val
+            FROM (
+                SELECT value AS val, 1 AS cnt
+                FROM sensor_history
+                WHERE sensor_id = ? AND timestamp >= ?
+                UNION ALL
+                SELECT avg_value AS val, sample_count AS cnt
+                FROM sensor_history_5min
+                WHERE sensor_id = ? AND bucket_ms >= ?
+                UNION ALL
+                SELECT avg_value AS val, sample_count AS cnt
+                FROM sensor_history_hourly
+                WHERE sensor_id = ? AND bucket_ms >= ?
+                UNION ALL
+                SELECT avg_value AS val, sample_count AS cnt
+                FROM sensor_history_daily
+                WHERE sensor_id = ? AND bucket_ms >= ?
+            )
+            HAVING SUM(cnt) > 0
             """,
-            (sensor_id, cutoff_ms),
+            (
+                sensor_id,
+                cutoff_ms,
+                sensor_id,
+                cutoff_ms,
+                sensor_id,
+                cutoff_ms,
+                sensor_id,
+                cutoff_ms,
+            ),
         ).fetchone()
-        return row["avg_val"] if row else None
+        return row["avg_val"] if row and row["avg_val"] is not None else None
+
+    async def get_timeseries(
+        self, sensor_id: str, start_ms: int, end_ms: int
+    ) -> list[tuple[int, float]]:
+        """Fetch chart data from the appropriate compaction tier."""
+        return await self._run(self._get_timeseries_sync, sensor_id, start_ms, end_ms)
+
+    def _get_timeseries_sync(
+        self, sensor_id: str, start_ms: int, end_ms: int
+    ) -> list[tuple[int, float]]:
+        assert self._conn is not None
+        duration_ms = end_ms - start_ms
+
+        # Choose tier based on requested range
+        if duration_ms <= 48 * 3600 * 1000:
+            table, time_col, val_col = "sensor_history", "timestamp", "value"
+        elif duration_ms <= 30 * 86400 * 1000:
+            table, time_col, val_col = "sensor_history_5min", "bucket_ms", "avg_value"
+        elif duration_ms <= 365 * 86400 * 1000:
+            table, time_col, val_col = "sensor_history_hourly", "bucket_ms", "avg_value"
+        else:
+            table, time_col, val_col = "sensor_history_daily", "bucket_ms", "avg_value"
+
+        rows = self._conn.execute(
+            f"""
+            SELECT {time_col} AS ts, {val_col} AS val
+            FROM {table}
+            WHERE sensor_id = ? AND {time_col} BETWEEN ? AND ?
+            ORDER BY {time_col} ASC
+            """,
+            (sensor_id, start_ms, end_ms),
+        ).fetchall()
+        return [(row["ts"], row["val"]) for row in rows]
 
     # ─── action_log ───────────────────────────────────────────────────────────
 
