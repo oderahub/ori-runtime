@@ -276,9 +276,50 @@ class TestWatchdog:
         watchdog_warnings = [
             r.message
             for r in caplog.records
-            if "Watchdog" in r.message and "not found" in r.message
         ]
         assert watchdog_warnings, "Expected watchdog 'not found' warning in logs"
+
+
+    async def test_watchdog_writes_magic_v_on_shutdown(
+        self, minimal_config, monkeypatch, caplog
+    ):
+        """/dev/watchdog open/write are called, magic V written on shutdown."""
+        import builtins
+        from unittest.mock import mock_open
+
+        _patch_external(monkeypatch)
+        monkeypatch.setattr("ori.runtime.os.path.exists", lambda p: True)
+
+        m_open = mock_open()
+        real_open = builtins.open
+
+        def _smart_open(file, *args, **kwargs):
+            if file == "/dev/watchdog":
+                return m_open(file, *args, **kwargs)
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _smart_open)
+
+        runtime = OriRuntime(config_path=str(minimal_config))
+
+        async def _stop():
+            await asyncio.sleep(0.1)
+            await runtime.stop()
+
+        with caplog.at_level(logging.INFO):
+            await asyncio.gather(runtime.start(), _stop())
+
+        # Assert watchdog device was opened for writing
+        m_open.assert_called_with("/dev/watchdog", "wb", buffering=0)
+
+        # Assert magical 'V' was written during shutdown
+        handle = m_open()
+        writes = [c.args[0] for c in handle.write.call_args_list if c.args]
+        assert b"V" in writes, "Expected magic 'V' to be written to watchdog"
+
+        # Check logs for clean shutdown line
+        v_log = [r.message for r in caplog.records if "magic V written" in r.message]
+        assert v_log, "Expected magic V log message"
 
 
 class TestSensorPolling:

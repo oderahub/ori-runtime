@@ -341,14 +341,24 @@ class OriRuntime:
                     WATCHDOG_DEVICE,
                     WATCHDOG_TIMEOUT,
                 )
-                while not self._shutdown_event.is_set():
-                    wd.write(b"1")
+                try:
+                    while not self._shutdown_event.is_set():
+                        wd.write(b"1")
+                        wd.flush()
+                        try:
+                            # Immediate wake on shutdown instead of sleeping blindly
+                            await asyncio.wait_for(
+                                asyncio.shield(self._shutdown_event.wait()),
+                                timeout=WATCHDOG_PING_INTERVAL,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                finally:
+                    # Clean shutdown — magic V tells the kernel this was intentional
+                    # Runs even if the task is cancelled (CancelledError)
+                    wd.write(b"V")
                     wd.flush()
-                    await asyncio.sleep(WATCHDOG_PING_INTERVAL)
-                # Clean shutdown — magic V tells the kernel this was intentional
-                wd.write(b"V")
-                wd.flush()
-                logger.info("Watchdog: closed cleanly (magic V written)")
+                    logger.info("Watchdog: closed cleanly (magic V written)")
         except PermissionError:
             logger.warning(
                 "Watchdog: cannot open %s — permission denied. "
