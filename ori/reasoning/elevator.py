@@ -208,7 +208,7 @@ class IntelligenceElevator:
         hook_ctx = None
         if hasattr(skill, "hooks") and hasattr(skill.hooks, "pre_trigger_eval"):
             from ori.skills.hooks_api import HookContext
-            hook_ctx = HookContext.build(event, state_store)
+            hook_ctx = HookContext.build(event, state_store, getattr(skill, "name", "unknown"))
             try:
                 skill.hooks.pre_trigger_eval(hook_ctx)
                 ctx.update(hook_ctx.derived)
@@ -319,7 +319,7 @@ class IntelligenceElevator:
                 # even if tier was local_slm.
                 rule_res, _ = self._evaluate_rules_with_hooks(event, skill, state_store)
 
-                pt_ctx = HookContext.build(event, state_store)
+                pt_ctx = HookContext.build(event, state_store, getattr(skill, "name", "unknown"))
                 pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""
 
                 try:

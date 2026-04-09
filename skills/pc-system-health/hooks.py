@@ -22,7 +22,7 @@ def pre_trigger_eval(context):
         if elapsed_min > 0:
             delta = current_write_mb - last_write_mb
             context.derived["write_rate_mb_per_min"] = delta / elapsed_min
-            baseline = context.history.avg_1h("write_rate_mb_per_min") or 1.0
+            baseline = context.history.avg_hours("write_rate_mb_per_min", 1) or 1.0
             context.derived["write_rate_ratio"] = (
                 context.derived["write_rate_mb_per_min"] / baseline
             )
