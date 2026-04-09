@@ -227,6 +227,7 @@ git clone https://github.com/ori-platform/ori-runtime.git
 cd ori-runtime
 python3 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip          # required: old pip (<22) can't handle pyproject.toml editable installs
 pip install -e ".[dev]"
 
 # Verify everything works (660+ tests)
@@ -291,7 +292,7 @@ First PR suggestions: new `psutil` sensor types — testable on any laptop, no h
 
 ori-cloud — the managed service — is how the project sustains itself.
 
-[Contributing](CONTRIBUTING.md) · [Architecture](CLAUDE.md) · [Design Principles](PRINCIPLES.md)
+[Contributing](CONTRIBUTING.md) · [Architecture](CLAUDE.md) · [Design Principles](PRINCIPLES.md) · [Issues](https://github.com/ori-platform/ori-runtime/issues)
 
 **Ori Nexus Systems LTD** · Lagos, Nigeria · 2026
 

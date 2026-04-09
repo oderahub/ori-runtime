@@ -9,7 +9,7 @@ description = "Offline-first agentic IoT runtime — give physical devices the a
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Ori Technologies", email = "hello@ori.dev" }
+    { name = "Ori Nexus Systems LTD", email = "wasiubakare@gmail.com" }
 ]
 keywords = ["iot", "edge-ai", "agentic", "llm", "raspberry-pi", "offline-first"]
 classifiers = [
@@ -58,9 +58,9 @@ dev = [
 ori-runtime = "ori.runtime:main"
 
 [project.urls]
-Homepage = "https://ori.dev"
+Homepage = "https://github.com/ori-platform/ori-runtime"
 Repository = "https://github.com/ori-platform/ori-runtime"
-Documentation = "https://docs.ori.dev"
+Documentation = "https://github.com/ori-platform/ori-runtime#readme"
 Issues = "https://github.com/ori-platform/ori-runtime/issues"
 
 [tool.setuptools.packages.find]

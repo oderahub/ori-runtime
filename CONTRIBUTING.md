@@ -53,17 +53,55 @@ evaluated through the six design lenses defined there. The most important one:
 git clone https://github.com/ori-platform/ori-runtime.git
 cd ori-runtime
 
-# Create a virtual environment
+# Create a virtual environment (Python 3.11+ required)
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install in development mode with dev dependencies
+# Upgrade pip first (required — old system pip can't handle pyproject.toml editable installs)
+pip install --upgrade pip
+
+# Option A — hash-locked install (recommended, matches what CI uses)
+pip install --require-hashes -r requirements-dev.txt
+pip install -e . --no-deps
+
+# Option B — editable install for active development (resolves latest compatible versions)
 pip install -e ".[dev]"
 
 # Verify everything works
 pytest tests/ -v
 python -c "import ori; print('imports ok')"
 ```
+
+### Dependency Model
+
+Dependencies are managed with [pip-tools](https://github.com/jazzband/pip-tools):
+
+| File | Purpose | Edit? |
+| ---|---|--- |
+| `requirements.in` | Human-readable runtime constraints (`>=`) | ✅ Edit this |
+| `requirements-dev.in` | Human-readable dev constraints | ✅ Edit this |
+| `requirements.txt` | Compiled + SHA256-hashed runtime deps | ❌ Never edit manually |
+| `requirements-dev.txt` | Compiled + SHA256-hashed dev deps | ❌ Never edit manually |
+
+**To update or add a dependency:**
+
+```bash
+pip install pip-tools
+
+# Edit requirements.in or requirements-dev.in, then recompile:
+pip-compile requirements.in --generate-hashes --annotate -o requirements.txt
+pip-compile requirements-dev.in --generate-hashes --annotate --constraint requirements.txt -o requirements-dev.txt
+
+# Verify the new hashes install cleanly
+python -m venv /tmp/ori_verify && /tmp/ori_verify/bin/pip install --require-hashes -r requirements-dev.txt
+/tmp/ori_verify/bin/pip install -e . --no-deps
+/tmp/ori_verify/bin/pytest tests/ -v
+rm -rf /tmp/ori_verify
+```
+
+Never edit `requirements.txt` or `requirements-dev.txt` by hand — they are
+generated files. PRs that modify them without a corresponding change to the
+corresponding `.in` file will be rejected.
 
 ### Hardware-Optional Development
 
