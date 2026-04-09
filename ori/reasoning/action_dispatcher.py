@@ -84,6 +84,8 @@ class ActionDispatcher:
         self._state_store = state_store
         self._alert_sender = alert_sender
         self._config: dict = config or {}
+        self._log_action_decisions = bool(self._config.get("log_action_decisions", True))
+        self._log_approval_workflow = bool(self._config.get("log_approval_workflow", True))
         self._logger_action = LoggerAction()
         self._executors: dict[str, Any] = {
             # Built-in fallback for test environments.
@@ -222,12 +224,13 @@ class ActionDispatcher:
                 )
 
             else:
-                logger.warning(
-                    "ActionDispatcher: unknown action tier %r for action=%r — "
-                    "treating as Tier A",
-                    tier,
-                    action,
-                )
+                if self._log_action_decisions:
+                    logger.warning(
+                        "ActionDispatcher: unknown action tier %r for action=%r — "
+                        "treating as Tier A",
+                        tier,
+                        action,
+                    )
                 action_result = await self._execute_immediately(action, tier, context)
 
         except (Exception, asyncio.CancelledError) as exc:
@@ -307,13 +310,16 @@ class ActionDispatcher:
         try:
             executor = self._executors.get(action)
             if executor is not None:
+                if self._log_action_decisions:
+                    logger.info("ActionDispatcher: executing action %r (tier=%s)", action, tier)
                 await executor(action, context)
             else:
-                logger.debug(
-                    "ActionDispatcher: no executor registered for action=%r — "
-                    "logging intent only",
-                    action,
-                )
+                if self._log_action_decisions:
+                    logger.debug(
+                        "ActionDispatcher: no executor registered for action=%r — "
+                        "logging intent only",
+                        action,
+                    )
         except (Exception, asyncio.CancelledError) as exc:
             if tier == ActionTier.SAFETY_CRITICAL:
                 logger.critical(
@@ -385,6 +391,9 @@ class ActionDispatcher:
             :class:`~ori.network.events.ActionResult` with ``approved`` set to
             ``True`` / ``False`` based on the operator response.
         """
+        if self._log_approval_workflow:
+            logger.info("ActionDispatcher: triggering Tier C approval workflow for action=%r", action)
+
         device_id = context.event.device_id if context.event else "unknown"
         message = self._format_approval_message(
             device_id=device_id,

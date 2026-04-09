@@ -69,6 +69,20 @@ class OriRuntime:
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
             raise
+
+        from logging.handlers import RotatingFileHandler
+
+        root_logger = logging.getLogger()
+        root_logger.setLevel(getattr(logging, config.logging.level, logging.INFO))
+
+        file_handler = RotatingFileHandler(
+            config.logging.file,
+            maxBytes=config.logging.max_bytes,
+            backupCount=config.logging.backup_count
+        )
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
+        root_logger.addHandler(file_handler)
+
         logger.info(
             "[runtime] config loaded — device=%s location=%s",
             config.device.id,
@@ -126,6 +140,8 @@ class OriRuntime:
                 "approval_timeout_seconds": _approval_timeout,
                 "primary_alert_channel": config.actions.primary_alert_channel,
                 "device_timezone": config.device.timezone,
+                "log_action_decisions": config.logging.log_action_decisions,
+                "log_approval_workflow": config.logging.log_approval_workflow,
             },
         )
 
@@ -217,6 +233,7 @@ class OriRuntime:
             connect_cfg = {
                 "sensor_id": sensor_cfg.id,
                 "sensor_type": sensor_cfg.type,
+                "circuit_breaker": config.hal.circuit_breaker,
                 **sensor_cfg.metadata,
             }
             try:
