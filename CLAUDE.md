@@ -655,9 +655,7 @@ that must be de-energised on failure.
 - **No ORM.** Direct sqlite3 with parameterised queries.
 - **No global state.** All state passes explicitly.
 - **No synchronous blocking calls.** Everything is async.
-- **No circuit breaker bypass**. Every adapter subclass must call `_cb_init()` in `connect()`, `_cb_allow_read()` before every `read()`, and
-  `_cb_record_success() / _cb_record_failure()` on each result.
-  The Phase 1 stubs are no-ops — they will activate in Phase 2.
+- **No circuit breaker bypass**. Every adapter subclass must initialize `self._breaker = HardwareCircuitBreaker(adapter_name, config)` and securely wrap its physical I/O tasks within the asynchronous `async with self._breaker:` context manager to effortlessly provide hardware recovery.
 
 ---
 

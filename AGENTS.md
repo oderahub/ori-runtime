@@ -141,22 +141,17 @@ The singleton must:
   to layers above the HAL
 
 CIRCUIT BREAKER REQUIREMENT:
-Every adapter that polls hardware must call the circuit breaker methods:
+Every adapter that polls hardware must utilize the hardware circuit breaker gracefully:
 
 ```py
-    def __init__(self):
-        self._cb_init({})  # Phase 1: no-op stubs, Phase 2: full logic
+    from ori.hal.base import HardwareCircuitBreaker
+
+    def __init__(self, adapter_name: str, config: dict):
+        self._breaker = HardwareCircuitBreaker(adapter_name, config)
 
     async def read(self, sensor_id):
-        if not self._cb_allow_read():
-            raise AdapterReadError(f'{self.adapter_name}: circuit open')
-        try:
-            result = await self._do_read(sensor_id)
-            self._cb_record_success()
-            return result
-        except (AdapterReadError, AdapterTimeoutError) as e:
-            self._cb_record_failure()
-            raise
+        async with self._breaker:
+            return await self._do_read(sensor_id)
 ```
 
 ---
@@ -212,10 +207,10 @@ actions:
 
 ```python
 # hooks.py — optional, only when YAML is insufficient
-def post_reasoning(result, ctx):
+def post_reasoning(result, context):
     """Called after LLM reasoning, before action dispatch."""
     # result: ReasoningResult
-    # ctx: SkillContext with .reading, .history, .device, .config
+    # context: HookContext with .readings, .history, .state, .timestamp, .derived
     return result  # always return result (modified or unchanged)
 ```
 
