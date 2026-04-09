@@ -630,29 +630,22 @@ actions:
                 "  sms:\n"
                 "    enabled: true\n"
                 "    AT_API_KEY: 'key'\n"
-                "    AT_USERNAME: 'user'\n"
-                "    OWNER_PHONE_NUMBER: '${OWNER_PHONE_NUMBER}'"
+                "    AT_USERNAME: '${AT_USERNAME}'"
             ),
         )
-        with pytest.raises(ConfigValidationError, match="OWNER_PHONE_NUMBER"):
+        with pytest.raises(ConfigValidationError, match="AT_USERNAME"):
             Config.load(yaml_path)
 
-    def test_whatsapp_missing_secondary_warns(self, tmp_path, caplog):
+    def test_operator_contact_missing_warns(self, tmp_path, caplog):
         import logging
 
         yaml_path = _write_yaml(
             tmp_path,
             self._yaml(
                 "  primary_alert_channel: whatsapp\n"
-                "  whatsapp:\n"
-                "    enabled: true\n"
-                "    TWILIO_ACCOUNT_SID: 'sid'\n"
-                "    TWILIO_AUTH_TOKEN: 'token'\n"
-                "    TWILIO_WHATSAPP_FROM: 'from'\n"
-                "    OWNER_WHATSAPP_NUMBER: 'to'\n"
-                "    SECONDARY_WHATSAPP: '${SECONDARY_WHATSAPP}'"
+                "  operator_contact: '${OWNER_PHONE_NUMBER}'\n"
             ),
         )
         with caplog.at_level(logging.WARNING):
             Config.load(yaml_path)
-            assert "SECONDARY_WHATSAPP missing" in caplog.text
+            assert "actions.operator_contact is missing" in caplog.text

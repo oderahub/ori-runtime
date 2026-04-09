@@ -79,6 +79,21 @@ class ActionChannelConfig:
 
 
 @dataclass
+class HalConfig:
+    circuit_breaker: dict = field(default_factory=dict)
+
+
+@dataclass
+class LoggingConfig:
+    level: str = "INFO"
+    file: str = "ori.log"
+    max_bytes: int = 10485760
+    backup_count: int = 3
+    log_action_decisions: bool = True
+    log_approval_workflow: bool = True
+
+
+@dataclass
 class Config:
     device: DeviceConfig
     sensors: list[SensorConfig]
@@ -86,6 +101,8 @@ class Config:
     reasoning: ReasoningConfig
     gateway: GatewayConfig
     actions: ActionChannelConfig
+    hal: HalConfig
+    logging: LoggingConfig
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -116,6 +133,13 @@ class Config:
         reasoning = _parse_reasoning(data.get("reasoning", {}))
         gateway = _parse_gateway(data.get("gateway", {}))
         actions = _parse_actions(data.get("actions", {}))
+        hal = _parse_hal(data.get("hal"))
+        logging_cfg = _parse_logging(data.get("logging"))
+
+        if not actions.operator_contact or "${" in actions.operator_contact:
+            logger.warning("[config] actions.operator_contact is missing or not properly interpolated. Tier C emergency actions will fail.")
+        if actions.secondary_contact and "${" in actions.secondary_contact:
+            logger.warning("[config] actions.secondary_contact contains uninterpolated variable. Escalations may fail.")
 
         whatsapp_enabled = (
             str(actions.whatsapp.get("enabled", "")).lower() == "true"
@@ -126,7 +150,6 @@ class Config:
                 "TWILIO_ACCOUNT_SID",
                 "TWILIO_AUTH_TOKEN",
                 "TWILIO_WHATSAPP_FROM",
-                "OWNER_WHATSAPP_NUMBER",
             ):
                 val = str(actions.whatsapp.get(v, ""))
                 if not val or "${" in val:
@@ -136,18 +159,12 @@ class Config:
                         f"Set it in your .env file before starting Ori."
                     )
 
-        sec_whatsapp = str(actions.whatsapp.get("SECONDARY_WHATSAPP", ""))
-        if "${" in sec_whatsapp:
-            logger.warning(
-                "SECONDARY_WHATSAPP missing. Tier C escalation will not function if operator does not respond."
-            )
-
         sms_enabled = (
             str(actions.sms.get("enabled", "")).lower() == "true"
             or actions.sms.get("enabled") is True
         )
         if sms_enabled:
-            for v in ("AT_API_KEY", "AT_USERNAME", "OWNER_PHONE_NUMBER"):
+            for v in ("AT_API_KEY", "AT_USERNAME"):
                 val = str(actions.sms.get(v, ""))
                 if not val or "${" in val:
                     resolved_value = actions.sms.get(v, "")
@@ -163,6 +180,8 @@ class Config:
             reasoning=reasoning,
             gateway=gateway,
             actions=actions,
+            hal=hal,
+            logging=logging_cfg,
             raw=data,
         )
 
@@ -332,6 +351,57 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         whatsapp=data.get("whatsapp") or {},
         sms=data.get("sms") or {},
         relay=relay,
+    )
+
+
+def _parse_hal(data: Any) -> HalConfig:
+    """Parse the HAL block gracefully, enforcing safe defaults on failure."""
+    default_cb = {"failure_threshold": 5, "recovery_timeout_s": 300, "success_threshold": 2}
+
+    if not isinstance(data, dict):
+        if data is not None:
+            logger.warning("[config] 'hal' config missing or not a dict. Falling back to default circuit breaker.")
+        return HalConfig(circuit_breaker=default_cb)
+
+    cb_data = data.get("circuit_breaker")
+    if not isinstance(cb_data, dict):
+        if cb_data is not None:
+            logger.warning("[config] 'hal.circuit_breaker' missing or not a dict. Falling back to default circuit breaker.")
+        return HalConfig(circuit_breaker=default_cb)
+
+    try:
+        cb_out = {
+            "failure_threshold": int(cb_data.get("failure_threshold", 5)),
+            "recovery_timeout_s": int(cb_data.get("recovery_timeout_s", 300)),
+            "success_threshold": int(cb_data.get("success_threshold", 2)),
+        }
+    except (ValueError, TypeError):
+        logger.warning("[config] 'hal.circuit_breaker' has invalid types. Falling back to default circuit breaker.")
+        cb_out = default_cb
+
+    return HalConfig(circuit_breaker=cb_out)
+
+
+def _parse_logging(data: Any) -> LoggingConfig:
+    if not isinstance(data, dict):
+        if data is not None:
+            logger.warning("[config] 'logging' section is not a mapping. Using defaults.")
+        return LoggingConfig()
+
+    try:
+        max_bytes = int(data.get("max_bytes", 10485760))
+        backup_count = int(data.get("backup_count", 3))
+    except (ValueError, TypeError):
+        max_bytes = 10485760
+        backup_count = 3
+
+    return LoggingConfig(
+        level=str(data.get("level", "INFO")),
+        file=str(data.get("file", "ori.log")),
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+        log_action_decisions=bool(data.get("log_action_decisions", True)),
+        log_approval_workflow=bool(data.get("log_approval_workflow", True))
     )
 
 

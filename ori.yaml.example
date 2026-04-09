@@ -98,19 +98,19 @@ actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
   primary_alert_channel: sms
+  operator_contact: "${OWNER_PHONE_NUMBER}"          # Unified: WHO to contact for Tier-C Approvals
+  secondary_contact: ""                              # Optional escalation contact
 
   whatsapp:
     enabled: true
     TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
     TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
     TWILIO_WHATSAPP_FROM: "${TWILIO_WHATSAPP_FROM}"
-    OWNER_WHATSAPP_NUMBER: "${OWNER_WHATSAPP_NUMBER}"
 
   sms:
     enabled: true                    # Africa's Talking — primary for Nigeria
     AT_API_KEY: "${AT_API_KEY}"
     AT_USERNAME: "${AT_USERNAME}"
-    OWNER_PHONE_NUMBER: "${OWNER_PHONE_NUMBER}"
 
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
