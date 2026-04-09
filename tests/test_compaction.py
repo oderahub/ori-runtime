@@ -1,3 +1,6 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
 import pytest
 
 from ori.state.store import StateStore
