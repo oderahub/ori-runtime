@@ -8,9 +8,6 @@ updates:
       time: "06:00"
       timezone: Africa/Lagos
     open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "automated"
     ignore:
       # Pin major versions manually — breaking changes need a human decision
       - dependency-name: "anthropic"
@@ -28,8 +25,5 @@ updates:
       day: monday
       time: "06:00"
       timezone: Africa/Lagos
-    labels:
-      - "dependencies"
-      - "automated"
     commit-message:
       prefix: "ci(deps)"
