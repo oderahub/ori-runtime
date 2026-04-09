@@ -183,7 +183,9 @@ triggers:
     action_tier: D # → cuts power. no waiting.
 ```
 
-Bundled skills: **pc-system-health** (runs on any laptop) and **energy-anomaly-detector**. More are coming — including HVAC refrigerant monitoring due to popular demand.
+Bundled skills: **pc-system-health** (runs on any laptop) and **energy-anomaly-detector**. More are coming — including HVAC refrigerant monitoring.
+
+Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)** — verified by Ed25519 signature and VirusTotal before installation.
 
 ---
 

@@ -17,6 +17,8 @@ evaluated through the six design lenses defined there. The most important one:
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Architecture Overview](#architecture-overview)
+- [AI-Assisted Development](#ai-assisted-development)
+- [Contributor Boundaries](#contributor-boundaries)
 - [How to Contribute](#how-to-contribute)
 - [Code Standards](#code-standards)
 - [Testing](#testing)
@@ -24,6 +26,7 @@ evaluated through the six design lenses defined there. The most important one:
 - [Commit Messages](#commit-messages)
 - [Pull Request Process](#pull-request-process)
 - [Types of Contributions Welcome](#types-of-contributions-welcome)
+- [Security](#security)
 - [Community Guidelines](#community-guidelines)
 
 ---
@@ -76,12 +79,12 @@ python -c "import ori; print('imports ok')"
 
 Dependencies are managed with [pip-tools](https://github.com/jazzband/pip-tools):
 
-| File | Purpose | Edit? |
-| ---|---|--- |
-| `requirements.in` | Human-readable runtime constraints (`>=`) | ✅ Edit this |
-| `requirements-dev.in` | Human-readable dev constraints | ✅ Edit this |
-| `requirements.txt` | Compiled + SHA256-hashed runtime deps | ❌ Never edit manually |
-| `requirements-dev.txt` | Compiled + SHA256-hashed dev deps | ❌ Never edit manually |
+| File                   | Purpose                                   | Edit?                  |
+| ---------------------- | ----------------------------------------- | ---------------------- |
+| `requirements.in`      | Human-readable runtime constraints (`>=`) | ✅ Edit this           |
+| `requirements-dev.in`  | Human-readable dev constraints            | ✅ Edit this           |
+| `requirements.txt`     | Compiled + SHA256-hashed runtime deps     | ❌ Never edit manually |
+| `requirements-dev.txt` | Compiled + SHA256-hashed dev deps         | ❌ Never edit manually |
 
 **To update or add a dependency:**
 
@@ -135,6 +138,92 @@ The **Action Tier Framework** is what makes Ori genuinely agentic:
 | **D** | Safety-Critical | Always autonomous, highest priority | Emergency cutoffs                 |
 
 For the complete architecture, read [`CLAUDE.md`](CLAUDE.md).
+
+---
+
+## AI-Assisted Development
+
+AI-assisted development is **welcome and expected** on this project. The
+maintainers use AI tools daily. This is not an anti-AI stance.
+
+The rule is simple: **if you submit AI-generated code, you must be able to
+explain every line and defend every decision in a review conversation.**
+If you cannot explain it, do not submit it.
+
+This is not about policing your tools. It is about ensuring that every
+contributor understands the code they are signing off on — because this
+codebase controls physical hardware.
+
+**What this means in practice:**
+
+- Generated code that you understand and can defend: ✅ welcome
+- Copy-pasted output you have not read: ❌ will be rejected
+- Generated tests with no understanding of what they cover: ❌ will be rejected
+- AI-assisted refactors where you can walk through the change: ✅ welcome
+
+---
+
+## Contributor Boundaries
+
+Ori has a clear separation between bundled skills and community skills. Understanding this is essential before contributing.
+
+### The two-tier skill model
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  BUNDLED SKILLS  /skills/ in this repo                      │
+│  Loaded via _load_hooks_direct() — sandbox bypassed         │
+│  Shipped with the runtime. Implicitly trusted.              │
+│  Requires core maintainer review. Ed25519 not required.     │
+├─────────────────────────────────────────────────────────────┤
+│  COMMUNITY SKILLS  ~/.ori/skills/ on device                 │
+│  Loaded via load_hooks_restricted() — sandboxed             │
+│  Installed from the Skills Hub. Never in this repo.         │
+│  Verified: Ed25519 signature + VirusTotal scan before load  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### `/skills/` in this repo — bundled skills (maintainer review required)
+
+**These are first-party skills that ship with the runtime.** Because they use
+`_load_hooks_direct()`, their `hooks.py` bypasses the import sandbox entirely.
+A malicious or broken bundled skill can access any Python module on the system.
+
+**Submitting a bundled skill PR:**
+
+- Open an issue first and get maintainer approval before writing code
+- The skill must be genuinely useful across a broad deployment context
+- `hooks.py` must be clean and minimal — no external API calls without explicit discussion
+- All triggers must declare `action_tier`
+- Tier C and D triggers require maintainer sign-off on the design
+- Expect thorough review — bundled skills have the same trust level as core runtime
+
+### Community skills — [ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)
+
+**Community skill contributions do not go here.** They go to the
+[ori-skills repository](https://github.com/ori-platform/ori-skills), where they go through:
+
+1. **Ed25519 signature verification** — every skill is signed by its author;
+   the runtime verifies the signature before loading
+2. **VirusTotal scan** — automated malware scan before Hub listing
+3. **Sandbox enforcement** — loaded via `load_hooks_restricted()` with an
+   explicit import allowlist; `hooks.py` cannot import arbitrary modules
+4. **Hub review** — community maintainer review for quality and safety
+
+The operator installs only the skills they explicitly want. The runtime
+never auto-loads from the Hub — explicit selection is the model.
+
+### `/ori/` — Core runtime (maintainer review required)
+
+Changes here affect physical hardware. Every core runtime PR requires:
+
+- An issue opened and discussed **before** writing code
+- Maintainer review via CODEOWNERS — PRs cannot be merged without approval
+- 100% test coverage on every Tier D code path
+- No new dependencies without prior discussion in an issue
+
+If you want to change something in `/ori/` that would be a meaningful
+improvement, the right first step is always to open an issue.
 
 ---
 
@@ -372,8 +461,12 @@ smart inverter protocols (SolarmanV5, VenusOS MQTT), environmental sensors.
 
 ### 🧠 New Skills
 
-Bring Ori to new domains — agriculture, cold chain logistics, HVAC,
-water quality monitoring, solar energy management.
+**Community skills** — agriculture, cold chain, HVAC, water quality, solar energy
+and more — go to **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**.
+They are verified with Ed25519 signatures and VirusTotal scans before being listed.
+
+**Bundled skills** (additions to `/skills/` in this repo) are first-party only.
+Open an issue first to discuss whether a skill belongs in the core bundle.
 
 ### 🔧 Action Executors
 
@@ -414,6 +507,31 @@ codebase is complex for good reasons — we're happy to explain.
 Every line of code potentially affects physical hardware. A bug in a
 monitoring dashboard shows wrong numbers. A bug in Ori could trip a
 circuit breaker. Code with that awareness.
+
+---
+
+## Security
+
+**Do not open GitHub issues for security vulnerabilities.**
+
+Security issues in Ori are higher-stakes than most projects because this
+codebase controls physical hardware. A vulnerability could trip a real
+circuit breaker or disable a safety cutoff.
+
+**To report a security issue:**
+
+1. Email the maintainer directly (find contact via GitHub profile)
+2. Include a clear description and reproduction steps
+3. Expect acknowledgement within 72 hours
+4. Do not publish details publicly until a fix is released
+
+**What counts as a security issue:**
+
+- Sandbox escape in skill hooks (`sandbox.py`)
+- Condition validation bypass in the rule engine
+- Tier D bypass via any code path
+- Credential exposure or injection via skill YAML
+- Supply-chain issues in dependencies
 
 ---
 
