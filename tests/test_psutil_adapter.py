@@ -506,6 +506,7 @@ class TestSleepBlockingProcess:
         adapter = await _make_adapter("sleep_blocking_process")
         with (
             patch("platform.system", return_value="Darwin"),
+            patch("shutil.which", return_value="/usr/bin/pmset"),
             patch("asyncio.create_subprocess_exec", return_value=fake_proc),
         ):
             r = await adapter.read("sleep_blocking_process")
@@ -551,6 +552,7 @@ class TestSleepBlockingProcess:
         adapter = await _make_adapter("sleep_blocking_process")
         with (
             patch("platform.system", return_value="Darwin"),
+            patch("shutil.which", return_value="/usr/bin/pmset"),
             patch("asyncio.create_subprocess_exec", side_effect=OSError("boom")),
         ):
             r = await adapter.read("sleep_blocking_process")
