@@ -302,6 +302,17 @@ class RuleEngine:
 
             try:
                 matched = bool(eval(condition, {"__builtins__": {}}, namespace))  # noqa: S307
+            except NameError as exc:
+                # Expected: sensor variable not present in this event's namespace.
+                # The runtime evaluates all triggers on every event; sensors not
+                # included in the current reading will always produce NameError.
+                # Log at DEBUG — this is not an error, it is a skip.
+                logger.debug(
+                    "RuleEngine: skipping rule %r — sensor not in event (%s)",
+                    name,
+                    exc,
+                )
+                continue
             except Exception:
                 logger.exception(
                     "RuleEngine: error evaluating condition %r for rule %r",
