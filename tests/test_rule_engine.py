@@ -12,6 +12,7 @@ from ori.reasoning.rule_engine import (
     RuleEngine,
     RuleEngineSafetyError,
     RuleResult,
+    _check_safety_ast,
     _validate_sensor_value,
 )
 
@@ -289,12 +290,11 @@ class TestSafetyChecks:
             engine.evaluate(_event(value=15.0), rules)
 
     def test_builtins_not_available_in_condition(self):
-        """Built-in functions like len() are not available in conditions."""
+        """Built-in functions like len() are rejected by AST validation."""
         engine = RuleEngine()
         rules = [_rule(name="r", condition="len([1,2,3]) > 0", action_tier="A")]
-        # len is not in __builtins__={} — this should be skipped (eval error), not matched
-        result = engine.evaluate(_event(), rules)
-        assert result.matched is False
+        with pytest.raises(RuleEngineSafetyError):
+            engine.evaluate(_event(), rules)
 
 
 # ─── Cooldown ─────────────────────────────────────────────────────────────────
@@ -460,3 +460,351 @@ class TestEvaluateRejectsInvalidSensorValue:
         rules = [_rule(name="r", condition="value > 5.0")]
         with pytest.raises(RuleEngineSafetyError, match="Inf"):
             engine.evaluate(self._event_with_value(float("inf")), rules)
+
+
+# ─── AST safety validation — direct unit tests ────────────────────────────────
+
+
+class TestCheckSafetyAstHappyPath:
+    """Conditions that MUST pass AST validation.
+
+    Every expression pattern used in bundled skills, CLAUDE.md examples,
+    and the ori.yaml.example blueprint is covered here.
+    """
+
+    @pytest.mark.parametrize(
+        "condition",
+        [
+            # Simple comparisons
+            "value > 10.0",
+            "value < 180",
+            "value >= 0",
+            "value <= 100",
+            "value == 0",
+            "value != 0",
+            # Boolean operators
+            "cpu_temp > 90 and cpu_temp_quality > 0",
+            "grid_voltage < 180 and inverter_battery > 0.4",
+            "value > 10 or value < -10",
+            "not (value > 10)",
+            "gas_concentration > 200 and gas_concentration <= 400",
+            # Arithmetic
+            "load_current > rated_capacity * 3.0",
+            "load_current > rated_capacity * 5.0",
+            "value > (rated_capacity * 0.8 + 2.0)",
+            "value * 2 + 1 > threshold",
+            "value - offset > 0",
+            "value / scale_factor < 1.0",
+            "value // 10 > 5",
+            "value % 2 == 0",
+            "value ** 2 > 100",
+            # Unary operators
+            "-value < -10",
+            "+value > 0",
+            # String comparison
+            "sensor_type == 'current_clamp'",
+            # Parenthesised groups
+            "(value > 5) and (value < 100)",
+            "(value + offset) > (threshold * 1.1)",
+            # History calls (energy-anomaly-detector patterns)
+            "load_current > (history.avg_24h('load_current') * 1.4)",
+            # History calls with multiple arguments
+            "history.last_n('load_current', 6) > 0",
+            # pc-system-health skill conditions
+            "cpu_percent > 90",
+            "memory_percent > 85",
+            "disk_percent > 90",
+            "write_rate_mb_per_min > 50",
+            "battery_drain_rate > 5.0",
+            "sleep_blocking_processes > 0",
+            # Bare constants and names (edge cases)
+            "True",
+            "False",
+            "value",
+            "42",
+        ],
+    )
+    def test_valid_condition_passes(self, condition: str):
+        _check_safety_ast(condition)  # must not raise
+
+
+class TestCheckSafetyAstRejections:
+    """Conditions that MUST be rejected by AST validation.
+
+    Covers code injection, sandbox escapes, and every Python construct
+    that has no legitimate use in a sensor threshold expression.
+    """
+
+    # ── Import-based attacks ──────────────────────────────────────────────
+
+    def test_import_statement(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("import os")
+
+    def test_dunder_import_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("__import__('os')")
+
+    # ── Dangerous builtin calls ──────────────────────────────────────────
+
+    def test_exec_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("exec('print(1)')")
+
+    def test_eval_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("eval('1+1')")
+
+    def test_open_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("open('/etc/passwd')")
+
+    def test_print_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("print('hello')")
+
+    def test_len_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("len('abc') > 0")
+
+    def test_type_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("type(value)")
+
+    def test_getattr_call(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("getattr(value, '__class__')")
+
+    def test_bare_function_name_as_call(self):
+        """Any non-history function call is forbidden."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("abs(value) > 5")
+
+    # ── Attribute-based sandbox escapes ───────────────────────────────────
+
+    def test_os_system(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("os.system('rm -rf /')")
+
+    def test_os_path_exists(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("os.path.exists('/')")
+
+    def test_sys_exit(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("sys.exit()")
+
+    def test_subprocess_run(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("subprocess.run(['ls'])")
+
+    def test_dunder_class_escape(self):
+        """Classic sandbox escape: ().__class__.__bases__[0].__subclasses__()"""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("().__class__")
+
+    def test_string_class_mro_escape(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("''.__class__.__mro__")
+
+    def test_attribute_on_value(self):
+        """Attribute access on sensor values is forbidden."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("value.bit_length() > 5")
+
+    def test_attribute_on_arbitrary_name(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("config.secret_key == 'leaked'")
+
+    # ── Lambda and function definitions ──────────────────────────────────
+
+    def test_lambda(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("(lambda: 1)()")
+
+    def test_lambda_with_args(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("(lambda x: x * 2)(5) > 5")
+
+    # ── Comprehensions ───────────────────────────────────────────────────
+
+    def test_list_comprehension(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("[x for x in range(10)]")
+
+    def test_set_comprehension(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("{x for x in range(10)}")
+
+    def test_dict_comprehension(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("{x: x for x in range(10)}")
+
+    def test_generator_expression(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("sum(x for x in range(10))")
+
+    # ── Walrus operator (:=) ─────────────────────────────────────────────
+
+    def test_walrus_operator(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("(x := 5) > 3")
+
+    # ── F-strings ────────────────────────────────────────────────────────
+
+    def test_fstring(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("f'{value}'")
+
+    def test_fstring_with_expression(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("f'{value * 2}'")
+
+    # ── Subscript / indexing ─────────────────────────────────────────────
+
+    def test_subscript(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("values[0] > 5")
+
+    def test_subscript_on_string(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("'abc'[0] == 'a'")
+
+    # ── Collection literals ──────────────────────────────────────────────
+
+    def test_list_literal(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("[1, 2, 3]")
+
+    def test_dict_literal(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("{'key': 'value'}")
+
+    def test_set_literal(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("{1, 2, 3}")
+
+    def test_tuple_literal(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("(1, 2, 3)")
+
+    # ── Ternary / conditional expression ─────────────────────────────────
+
+    def test_ternary_expression(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("1 if value > 5 else 0")
+
+    # ── Syntax errors ────────────────────────────────────────────────────
+
+    def test_syntax_error_raises_safety_error(self):
+        with pytest.raises(RuleEngineSafetyError, match="not a valid expression"):
+            _check_safety_ast("value >>>")
+
+    def test_incomplete_expression(self):
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("value >")
+
+    def test_multiple_statements_via_semicolon(self):
+        """Semicolons produce statements — mode='eval' rejects them."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("x = 1; x > 0")
+
+    # ── Edge cases ───────────────────────────────────────────────────────
+
+    def test_nested_attribute_on_non_history(self):
+        """Even deeply nested attribute chains are rejected."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("a.b.c > 0")
+
+    def test_method_call_on_non_history(self):
+        """Method calls on arbitrary objects are rejected."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("value.to_bytes(2, 'big')")
+
+    def test_chained_history_attribute_rejected(self):
+        """history.something.something is NOT a direct attribute."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("history.store._conn")
+
+    def test_starred_expression(self):
+        """Starred assignments cannot appear in eval mode."""
+        with pytest.raises(RuleEngineSafetyError):
+            _check_safety_ast("*x, = [1,2]")
+
+
+class TestAstValidationIntegration:
+    """End-to-end tests proving AST validation fires inside RuleEngine.evaluate()."""
+
+    def test_all_existing_unsafe_conditions_still_rejected(self):
+        """Regression: the 8 original unsafe patterns from Phase 1 still fail."""
+        engine = RuleEngine()
+        conditions = [
+            "import os; os.system('rm -rf /')",
+            "__import__('os')",
+            "exec('print(1)')",
+            "eval('1+1')",
+            "open('/etc/passwd')",
+            "os.path.exists('/')",
+            "sys.exit()",
+            "subprocess.run(['ls'])",
+        ]
+        for condition in conditions:
+            with pytest.raises(RuleEngineSafetyError):
+                engine.evaluate(_event(), [_rule(condition=condition)])
+
+    def test_safe_condition_evaluates_normally(self):
+        engine = RuleEngine()
+        result = engine.evaluate(
+            _event(value=15.0), [_rule(condition="value > 10.0")]
+        )
+        assert result.matched is True
+
+    def test_history_call_passes_ast_and_evaluates(self):
+        """history.avg_24h() passes AST and evaluates (returns 0.0 without store)."""
+        engine = RuleEngine()
+        result = engine.evaluate(
+            _event(value=15.0),
+            [_rule(condition="value > (history.avg_24h('load_current') * 1.4)")],
+        )
+        # avg_24h returns 0.0 without store, so 15.0 > 0.0 → matched
+        assert result.matched is True
+
+    def test_unsafe_rule_in_batch_rejects_entire_batch(self):
+        """Even one unsafe rule in the list rejects everything before eval."""
+        engine = RuleEngine()
+        rules = [
+            _rule(name="safe", condition="value > 10.0"),
+            _rule(name="evil", condition="().__class__"),
+        ]
+        with pytest.raises(RuleEngineSafetyError):
+            engine.evaluate(_event(value=15.0), rules)
+
+    def test_broken_condition_still_skipped_after_ast(self):
+        """Conditions with undefined variables pass AST but fail at eval — skipped."""
+        engine = RuleEngine()
+        rules = [
+            _rule(name="broken", condition="undefined_var > 5", action_tier="A"),
+            _rule(name="ok", condition="value > 0", action_tier="A"),
+        ]
+        result = engine.evaluate(_event(value=1.0), rules)
+        assert result.matched is True
+        assert result.rule_name == "ok"
+
+    def test_compound_condition_from_pc_skill(self):
+        """Real condition from pc-system-health: cpu_temp > 90 and cpu_temp_quality > 0."""
+        engine = RuleEngine()
+        result = engine.evaluate(
+            _event(value=95.0),
+            [_rule(condition="value > 90 and quality > 0")],
+        )
+        assert result.matched is True
+
+    def test_arithmetic_condition_from_energy_skill(self):
+        """Real condition from energy-anomaly-detector: load_current > rated_capacity * 5.0."""
+        engine = RuleEngine()
+        result = engine.evaluate(
+            _event(value=55.0),
+            [_rule(condition="value > rated_capacity * 5.0")],
+            context={"rated_capacity": 10.0},
+        )
+        assert result.matched is True

@@ -1,6 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import logging
 import math
 import time
@@ -11,8 +12,36 @@ from ori.network.events import OriEvent
 
 logger = logging.getLogger(__name__)
 
-# Patterns that must never appear in a rule condition expression.
-_UNSAFE_PATTERNS = ("import", "__", "exec", "eval", "open", "os", "sys", "subprocess")
+# ---------------------------------------------------------------------------
+# AST-based condition safety validation (Phase 2 upgrade)
+# ---------------------------------------------------------------------------
+# The ONLY object whose attributes may be accessed inside a condition.
+_ALLOWED_ATTRIBUTE_ROOTS = frozenset({"history"})
+
+# AST node types that are unconditionally safe in condition expressions.
+_SAFE_NODE_TYPES: frozenset[type] = frozenset({
+    # Structure
+    ast.Expression,
+    ast.Load,
+    # Values
+    ast.Name,
+    ast.Constant,
+    # Comparisons
+    ast.Compare,
+    ast.Eq, ast.NotEq,
+    ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.Is, ast.IsNot, ast.In, ast.NotIn,
+    # Boolean logic
+    ast.BoolOp,
+    ast.And, ast.Or,
+    # Arithmetic
+    ast.BinOp,
+    ast.Add, ast.Sub, ast.Mult, ast.Div,
+    ast.FloorDiv, ast.Mod, ast.Pow,
+    # Unary
+    ast.UnaryOp,
+    ast.Not, ast.UAdd, ast.USub,
+})
 
 
 class RuleEngineSafetyError(Exception):
@@ -121,13 +150,66 @@ def _validate_sensor_value(value: Any, rule_name: str) -> None:
         )
 
 
-def _check_safety(condition: str) -> None:
-    """Raise :exc:`RuleEngineSafetyError` if *condition* contains forbidden patterns."""
-    for pattern in _UNSAFE_PATTERNS:
-        if pattern in condition:
+def _check_safety_ast(condition: str) -> None:
+    """Validate *condition* using AST whitelist analysis.
+
+    Parses the condition string into an abstract syntax tree and walks
+    every node.  Only node types present in :data:`_SAFE_NODE_TYPES` are
+    allowed unconditionally.  ``ast.Attribute`` and ``ast.Call`` nodes
+    are allowed **only** when they reference a method on the ``history``
+    object (e.g. ``history.avg_24h('load_current')``).  Everything else
+    — imports, assignments, function definitions, comprehensions, lambda,
+    subscripts, arbitrary function calls, attribute access on non-history
+    objects — is rejected with :exc:`RuleEngineSafetyError`.
+
+    This replaces the Phase 1 string-pattern blacklist with a strict
+    whitelist that cannot be bypassed by creative encoding.
+    """
+    try:
+        tree = ast.parse(condition, mode="eval")
+    except SyntaxError as exc:
+        raise RuleEngineSafetyError(
+            f"Rule condition is not a valid expression: {condition!r} ({exc})"
+        ) from exc
+
+    for node in ast.walk(tree):
+        node_type = type(node)
+
+        # Fast path: unconditionally safe nodes.
+        if node_type in _SAFE_NODE_TYPES:
+            continue
+
+        # ast.Call — only permit history.method(...) calls.
+        if node_type is ast.Call:
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id in _ALLOWED_ATTRIBUTE_ROOTS
+            ):
+                # The call target is safe; the arguments will be
+                # validated when ast.walk visits them individually.
+                continue
             raise RuleEngineSafetyError(
-                f"Rule condition contains forbidden pattern {pattern!r}: {condition!r}"
+                f"Rule condition contains a forbidden function call: {condition!r}"
             )
+
+        # ast.Attribute — only permit access on the history object.
+        if node_type is ast.Attribute:
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id in _ALLOWED_ATTRIBUTE_ROOTS
+            ):
+                continue
+            raise RuleEngineSafetyError(
+                f"Rule condition contains forbidden attribute access: {condition!r}"
+            )
+
+        # Everything else is forbidden.
+        raise RuleEngineSafetyError(
+            f"Rule condition contains forbidden construct "
+            f"{node_type.__name__}: {condition!r}"
+        )
 
 
 def _now_ms() -> int:
@@ -204,7 +286,7 @@ class RuleEngine:
         for rule in rules:
             condition = rule.get("condition", "")
             if condition:
-                _check_safety(condition)
+                _check_safety_ast(condition)
 
         for rule in rules:
             name: str = rule.get("name", "<unnamed>")
