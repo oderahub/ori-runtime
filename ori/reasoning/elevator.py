@@ -168,13 +168,9 @@ class IntelligenceElevator:
         """
         tier = await self.select_tier(event, skill, state_store)
 
-        rules = getattr(skill, "triggers", [])
-        ctx: dict[str, Any] = {}
-        if hasattr(skill, "config") and isinstance(skill.config, dict):
-            ctx.update(skill.config)
+        rule_result, hook_ctx = self._evaluate_rules_with_hooks(event, skill, state_store)
 
         if tier == "rule":
-            rule_result = self._rule_engine.evaluate(event, rules, context=ctx)
             return ReasoningResult(
                 text=f"Rule matched: {rule_result.rule_name}",
                 tier="rule",
@@ -196,11 +192,34 @@ class IntelligenceElevator:
                 logger.exception(
                     "IntelligenceElevator: local_slm inference failed for "
                     "sensor_id=%s — returning stub result",
-                    event.sensor_id,
+                    event.sensor_id if event else "unknown",
                 )
 
         # Fallback stub — gateway/cloud tiers not yet wired
         return self._stub_result(tier, event)
+
+    def _evaluate_rules_with_hooks(self, event: OriEvent, skill: Any, state_store: Any):
+        """Build context with derived hook variables, and evaluate against RuleEngine."""
+        rules = getattr(skill, "triggers", [])
+        ctx: dict[str, Any] = {}
+        if hasattr(skill, "config") and isinstance(skill.config, dict):
+            ctx.update(skill.config)
+
+        hook_ctx = None
+        if hasattr(skill, "hooks") and hasattr(skill.hooks, "pre_trigger_eval"):
+            from ori.skills.hooks_api import HookContext
+            hook_ctx = HookContext.build(event, state_store)
+            try:
+                skill.hooks.pre_trigger_eval(hook_ctx)
+                ctx.update(hook_ctx.derived)
+            except Exception:
+                logger.exception(
+                    "IntelligenceElevator: pre_trigger_eval hook failed for %r",
+                    getattr(skill, "name", "unknown")
+                )
+
+        rule_result = self._rule_engine.evaluate(event, rules, context=ctx)
+        return rule_result, hook_ctx
 
     async def select_tier(
         self,
@@ -219,12 +238,7 @@ class IntelligenceElevator:
            internet available → ``'cloud'`` (future)
            fallback → ``'local_slm'``
         """
-        rules = getattr(skill, "triggers", [])
-        ctx: dict[str, Any] = {}
-        if hasattr(skill, "config") and isinstance(skill.config, dict):
-            ctx.update(skill.config)
-
-        rule_result = self._rule_engine.evaluate(event, rules, context=ctx)
+        rule_result, _ = self._evaluate_rules_with_hooks(event, skill, state_store)
 
         # Tier D is always handled by the rule engine — return immediately
         if rule_result.matched and rule_result.action_tier == "D":
@@ -255,10 +269,20 @@ class IntelligenceElevator:
         complexity = _complexity_score(current_value, avg_24h, history, _hour_now())
 
         offline = _is_offline()
-        if complexity < 0.3 or offline:
+        fallback = getattr(self._config, "offline_fallback", "rule") if self._config else "rule"
+        threshold = getattr(self._config, "escalation_threshold", 0.70) if self._config else 0.70
+
+        if offline:
+            return fallback
+
+        if complexity < 0.3:
             return "local_slm"
 
-        # Gateway / cloud tiers are not wired yet — always fall back
+        if complexity < threshold:
+            # Future: return "gateway" if LAN available
+            return "local_slm"
+
+        # Future: return "cloud" if complexity >= threshold and internet available
         return "local_slm"
 
     async def reason_and_dispatch(
@@ -287,6 +311,24 @@ class IntelligenceElevator:
         """
         try:
             result = await self.reason(event, skill, state_store)
+
+            if hasattr(skill, "hooks") and hasattr(skill.hooks, "post_reasoning"):
+                from ori.skills.hooks_api import HookContext
+
+                # Rule matching trigger identification is useful for post_reasoning
+                # even if tier was local_slm.
+                rule_res, _ = self._evaluate_rules_with_hooks(event, skill, state_store)
+
+                pt_ctx = HookContext.build(event, state_store)
+                pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""
+
+                try:
+                    skill.hooks.post_reasoning(result, pt_ctx)
+                except Exception:
+                    logger.exception(
+                        "IntelligenceElevator: post_reasoning hook failed for %r",
+                        getattr(skill, "name", "unknown")
+                    )
 
             sensor_type = (
                 event.reading.sensor_type if event.reading else event.event_type

@@ -143,7 +143,8 @@ class TestSelectTier:
         assert tier == "rule"
 
     async def test_offline_returns_local_slm(self):
-        elevator = IntelligenceElevator()
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(config=conf)
         skill = FakeSkill()
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
             tier = await elevator.select_tier(_event(), skill, None)
@@ -200,7 +201,8 @@ class TestReason:
             tokens_used=20,
             latency_ms=500,
         )
-        elevator = IntelligenceElevator(local_llm=mock_llm)
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = FakeSkill()
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
@@ -220,7 +222,8 @@ class TestReason:
             tokens_used=20,
             latency_ms=500,
         )
-        elevator = IntelligenceElevator(local_llm=mock_llm)
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = FakeSkill()
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
@@ -243,7 +246,8 @@ class TestReason:
     async def test_local_slm_failure_falls_back_to_stub(self):
         mock_llm = AsyncMock()
         mock_llm.reason.side_effect = RuntimeError("model crashed")
-        elevator = IntelligenceElevator(local_llm=mock_llm)
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = FakeSkill()
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
@@ -254,7 +258,8 @@ class TestReason:
         assert result.action_tier == "A"
 
     async def test_no_llm_returns_stub(self):
-        elevator = IntelligenceElevator(local_llm=None)
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=None, config=conf)
         skill = FakeSkill()
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
