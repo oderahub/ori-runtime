@@ -214,14 +214,14 @@ class SkillLoader:
                 )
         return skills
 
-    def load_one(self, skill_dir: Path) -> Skill:
+    def load_one(self, skill_dir: Path | str) -> Skill:
         """Load and validate a single skill from *skill_dir*.
 
         Reads ``skill.yaml`` (required) and ``hooks.py`` (optional) from
         *skill_dir*.
 
         Args:
-            skill_dir: Path to the skill directory.
+            skill_dir: Path to the skill directory (``str`` or :class:`~pathlib.Path`).
 
         Returns:
             A validated :class:`Skill` instance.
@@ -231,6 +231,7 @@ class SkillLoader:
             FileNotFoundError: If ``skill.yaml`` is missing.
             yaml.YAMLError: If the YAML is malformed.
         """
+        skill_dir = Path(skill_dir)
         yaml_path = skill_dir / "skill.yaml"
         raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
 
