@@ -263,15 +263,21 @@ ori/
 │   │   ├── skill.yaml
 │   │   └── hooks.py
 │   └── pc-system-health/
-│       └── skill.yaml
+│       ├── skill.yaml
+│       └── hooks.py           ← uses HookContext dynamic API
 │
 └── tests/
     ├── __init__.py
     ├── test_events.py
-    ├── test_rule_engine.py
-    ├── test_action_dispatcher.py  ← NEW — tests for all four tiers
+    ├── test_rule_engine.py         ← includes AST whitelist validation tests
+    ├── test_action_dispatcher.py
+    ├── test_circuit_breaker.py
     ├── test_deduplicator.py
-    └── test_config.py
+    ├── test_config.py
+    ├── test_elevator.py
+    ├── test_event_bus.py
+    ├── test_store.py
+    └── ... (23 test modules total)
 ```
 
 ---
@@ -303,7 +309,7 @@ Step 19  ori/actions/logger.py
 Step 20  ori/runtime.py                 ← ties everything together
 ```
 
-**Current build state:** Step 1 in progress.
+**Current build state:** All 20 steps complete. Runtime is operational.
 
 ---
 

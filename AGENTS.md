@@ -214,6 +214,39 @@ def post_reasoning(result, context):
     return result  # always return result (modified or unchanged)
 ```
 
+**HookContext API** (`ori/skills/hooks_api.py`):
+
+The `context` object passed to hooks is a `HookContext` instance built
+by the runtime. It provides dynamic, sandboxed access to sensor data
+and persistent state. **Never** access the StateStore or database
+directly from hooks — always go through these adapters.
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `context.readings` | `dict[str, Any]` | Current sensor values keyed by sensor_id |
+| `context.history` | `HookHistoryAdapter` | Parameterised history queries (see below) |
+| `context.state` | `HookStateAdapter` | Skill-isolated key-value persistence |
+| `context.timestamp` | `int` | Event timestamp (unix milliseconds) |
+| `context.derived` | `dict[str, Any]` | Writable dict for computed values |
+| `context.trigger_name` | `str` | Name of the trigger that fired |
+
+**HookHistoryAdapter methods:**
+
+```python
+context.history.avg_hours(sensor_id, hours)   # -> float | None
+context.history.avg_last_n(sensor_id, count)  # -> float | None
+context.history.last_value(sensor_id)         # -> float | None
+context.history.last_timestamp(sensor_id)     # -> int | None
+context.history.fetch_history(sensor_id, limit=1)  # -> list[dict]
+```
+
+**HookStateAdapter methods** (state is isolated per skill — no cross-skill leakage):
+
+```python
+context.state.get(key)          # -> str | None
+context.state.set(key, value)   # -> None (persists to SQLite)
+```
+
 ---
 
 ### 3. Adding a new action executor
@@ -477,8 +510,11 @@ Violating them creates vulnerabilities that affect physical hardware.
    without opening a GitHub issue and getting maintainer approval.
 
 3. Never use string-based pattern matching to validate skill
-   condition expressions. The rule engine's safety check must
-   use AST validation (Phase 2 upgrade — see P2 reference doc).
+   condition expressions. The rule engine uses AST whitelist
+   validation (`_check_safety_ast`) that parses conditions into
+   an abstract syntax tree and rejects any node type not in the
+   explicit allowlist. Only comparisons, boolean ops, arithmetic,
+   names, constants, and `history.method()` calls are permitted.
 
 4. Never interpolate untrusted input (skill names, sensor IDs,
    operator replies) into LLM prompts without sanitisation.
