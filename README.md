@@ -6,6 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
+[![Tests](https://img.shields.io/badge/tests-660%2B%20passing-1E6B4A?style=flat-square)](#testing)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
 </div>
@@ -16,7 +17,7 @@
 
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
-Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **Physical Actuation Trust** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first. No cloud required. Runs on a $55 Raspberry Pi.
+Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first. No cloud required. Runs on a $55 Raspberry Pi.
 
 ---
 
@@ -52,20 +53,18 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 
 ---
 
-## What Ori is not
+## What Ori Is Not
 
 - Not a monitoring dashboard like Grafana — Ori acts, not just displays
-- Not a rules engine like Node-RED — Ori reasons with LLMs, not just thresholds
 - Not a cloud IoT platform like AWS IoT Core — Ori runs fully offline
 - Not a notification system — alerts are Tier A, the least of what Ori does
+- Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
 
 ---
 
 ## Architecture
 
-![Ori Runtime Architecture](/docs/architecture.svg)
-
-```table
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │  Layer 6  Business       ori-cloud · dashboard · fleet       │
 ├──────────────────────────────────────────────────────────────┤
@@ -78,27 +77,32 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 2  Network         EventBus · Protocol Normaliser     │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 1  Perception      HAL · GPIO · I2C · RS485 · MQTT    │
+│  Layer 1  Perception      HAL · GPIO · I2C · RS485 · psutil │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 Layers 1–4 run on the device. **Layers 3 and 4 are inseparable** — the runtime always pairs a reasoning decision with an action decision. Layer 5 is the community. Layer 6 is the business.
 
-Runs on a [$55 Raspberry Pi 4](https://raspberrypi.com). No internet required. No cloud subscription.
+For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the design philosophy, read [`PRINCIPLES.md`](PRINCIPLES.md).
 
 ---
 
 ## Hardware Support
 
-| Protocol            | Coverage                                     |
-| ------------------- | -------------------------------------------- |
-| GPIO (Raspberry Pi) | Wired sensors and relay control              |
-| I2C / SPI           | Precision sensors: BME280, ADS1115, SCD40    |
-| Modbus RTU (RS485)  | Industrial energy meters, PLCs, motor drives |
-| MQTT                | WiFi-connected sensors via Mosquitto         |
-| Zigbee              | Smart home sensors via zigpy                 |
-| LoRaWAN             | Rural sensors up to 15km via ChirpStack      |
-| psutil / sysfs      | PC and server health monitoring              |
+| Protocol                | Status | Coverage                                     |
+| ----------------------- | ------ | -------------------------------------------- |
+| GPIO (Raspberry Pi)     | ✅     | Wired sensors and relay control              |
+| I2C / SPI               | ✅     | Precision sensors: BME280, ADS1115, SCD40    |
+| Modbus RTU (RS485)      | ✅     | Industrial energy meters, PLCs, motor drives |
+| psutil                  | ✅     | PC and server health monitoring (any laptop) |
+| MQTT                    | 🗓️     | WiFi-connected sensors via Mosquitto         |
+| OPC-UA                  | 🗓️     | Industrial PLCs (IEC 62541)                  |
+| SolarmanV5 (Growatt)    | 🗓️     | Smart inverter integration                   |
+| Zigbee / LoRaWAN        | 🗓️     | Smart home and rural long-range sensors      |
+
+✅ = Implemented &nbsp;&nbsp; 🗓️ = Roadmap
+
+All adapters include a **hardware circuit breaker** that auto-isolates failing buses to protect the rest of the system.
 
 ---
 
@@ -108,7 +112,7 @@ Ori runs a paired decision system on every sensor event:
 
 ### The Intelligence Elevator — _What does this mean?_
 
-```table
+```text
 Tier 1  RULE ENGINE    microseconds · always available · safety triggers
 Tier 2  LOCAL SLM      3-8 seconds  · fully offline    · everyday reasoning
 Tier 3  GATEWAY LLM    1-3 seconds  · LAN only         · cross-device reasoning
@@ -117,7 +121,7 @@ Tier 4  CLOUD LLM      2-5 seconds  · internet         · deep analysis + repor
 
 ### The Action Tier Framework — _What should I do about it?_
 
-```table
+```text
 Tier A  INFORMATIONAL       Always autonomous
         Alerts, logs, reports — the agent acts without asking
 
@@ -138,9 +142,23 @@ The runtime picks the cheapest reasoning tier that can answer. The action tier d
 
 ---
 
+## Safety Architecture
+
+Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety architecture enforces invariants at every layer:
+
+- **Tier D rules fire before any LLM** — deterministic, microsecond-latency cutoffs that cannot be disabled or overridden
+- **AST whitelist validation** — skill condition expressions are parsed into abstract syntax trees and only safe constructs are permitted (comparisons, arithmetic, `history.method()` calls). No string-pattern blacklist that can be bypassed
+- **Sandboxed skill hooks** — community skills cannot import arbitrary modules. The sandbox enforces an explicit allowlist at import time
+- **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
+- **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
+
+For the full set of security invariants, see [`AGENTS.md`](AGENTS.md#security-invariants--never-violate-these).
+
+---
+
 ## Skills
 
-Everything Ori does is a skill. A skill is a packaged agent behaviours with explicit action authority declarations written in YAML.
+Everything Ori does is a skill. A skill is a packaged agent behaviour with explicit action authority declarations written in YAML.
 
 ```yaml
 # skills/energy-anomaly-detector/skill.yaml
@@ -163,17 +181,11 @@ triggers:
     action_tier: D # → cuts power. no waiting.
 ```
 
-```bash
-ori skill install energy-anomaly-detector   # official hub
-ori skill install ./my-skill/               # local
-ori skill install github.com/user/skill     # GitHub
-```
-
-Skills are community-written, cryptographically signed, and installable from the **[Skills Hub](https://hub.ori.dev)**.
+Bundled skills: **pc-system-health** (runs on any laptop) and **energy-anomaly-detector**. More are coming — including HVAC refrigerant monitoring due to popular demand.
 
 ---
 
-## The Tier C approval workflow
+## The Tier C Approval Workflow
 
 When Ori proposes a hard physical action, this is what the operator receives:
 
@@ -203,39 +215,71 @@ The agent does the diagnosis. The operator approves or rejects a specific, fully
 
 ---
 
-## Try it now — no hardware needed
+## Quick Start — No Hardware Needed
+
+Ori's **pc-system-health** skill runs on any laptop using `psutil`. No Raspberry Pi, no sensors, no wiring.
 
 ```bash
-pip install ori-runtime
-ori init my-laptop
-ori skill install pc-system-health
-ori start
-# Ori reasons about your CPU, memory, and thermals.
-# Sends a WhatsApp alert if your machine overheats.
+# Clone and install
+git clone https://github.com/ori-platform/ori-runtime.git
+cd ori-runtime
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Verify everything works (660+ tests)
+pytest tests/ -v
+
+# Validate a skill loads cleanly
+python -c "
+import asyncio
+from ori.skills.loader import SkillLoader
+skill = asyncio.run(SkillLoader().load_one('skills/pc-system-health'))
+print(f'Loaded: {skill.name} v{skill.version}')
+for t in skill.triggers:
+    print(f'  Trigger: {t.name} tier={t.action_tier}')
+"
 ```
+
+---
+
+## Testing
+
+```bash
+pytest tests/ -v                              # Full suite
+pytest tests/test_rule_engine.py -v           # Specific module
+pytest tests/ --cov=ori --cov-report=term-missing  # With coverage
+```
+
+The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime. 660+ tests passing, 5 skipped (hardware-only).
 
 ---
 
 ## Roadmap
 
-| Phase  | Timeline      | Milestone                                                                 |
-| ------ | ------------- | ------------------------------------------------------------------------- |
-| PoC    | Now → Month 3 | Energy skill with full action tier support deployed in Lagos. Demo video. |
-| Launch | Month 3–9     | Public GitHub. Skills Hub. Action tier documented for community.          |
-| Growth | Month 9–18    | Rust runtime. 500+ skills. ori-cloud Business. Enterprise pilots.         |
-| Scale  | Month 18–36   | Global deployment. ORI Foundation. Hardware certification.                |
+| Phase  | Status        | Milestone                                                                  |
+| ------ | ------------- | -------------------------------------------------------------------------- |
+| Core   | ✅ Complete   | Full runtime with 6-layer architecture, 4-tier action framework, 660+ tests |
+| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video.      |
+| Launch | 🗓️ Planned    | Skills Hub. CLI tooling. Phone-as-gateway deployment model.                |
+| Growth | 🗓️ Planned    | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.               |
 
 ---
 
 ## Contributing
 
+We welcome contributions! Start here:
+
+1. **Read the design philosophy:** [`PRINCIPLES.md`](PRINCIPLES.md)
+2. **Read the contributor guide:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
+3. **Understand the extension points:** [`AGENTS.md`](AGENTS.md)
+
 ```bash
-cat CLAUDE.md           # Read architecture and conventions first
 pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md). First PR suggestions: new psutil sensor types — testable on any laptop, no hardware required.
+First PR suggestions: new `psutil` sensor types — testable on any laptop, no hardware required.
 
 ---
 
@@ -245,6 +289,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). First PR suggestions: new psutil sensor
 
 ori-cloud — the managed service — is how the project sustains itself.
 
-[Docs](https://docs.ori.dev) · [Skills Hub](https://hub.ori.dev) · [Discord](https://discord.gg/oriplatform) · [X](https://x.com/oriplatform)
+[Contributing](CONTRIBUTING.md) · [Architecture](CLAUDE.md) · [Design Principles](PRINCIPLES.md)
+
+**Ori Nexus Systems LTD** · Lagos, Nigeria · 2026
 
 </div>

@@ -59,9 +59,9 @@ ori-runtime = "ori.runtime:main"
 
 [project.urls]
 Homepage = "https://ori.dev"
-Repository = "https://github.com/ori-platform/ori"
+Repository = "https://github.com/ori-platform/ori-runtime"
 Documentation = "https://docs.ori.dev"
-Issues = "https://github.com/ori-platform/ori/issues"
+Issues = "https://github.com/ori-platform/ori-runtime/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
