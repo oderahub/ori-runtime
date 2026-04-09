@@ -240,6 +240,7 @@ ori/
 │   ├── skills/                ← Skills loader (Layer 5)
 │   │   ├── __init__.py
 │   │   ├── loader.py
+│   │   ├── hooks_api.py
 │   │   └── sandbox.py
 │   │
 │   ├── actions/               ← Action executors (called by action_dispatcher)
