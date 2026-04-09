@@ -79,7 +79,7 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 2  Network         EventBus · Protocol Normaliser     │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 1  Perception      HAL · GPIO · I2C · RS485 · psutil │
+│  Layer 1  Perception      HAL · GPIO · I2C · RS485 · psutil  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
