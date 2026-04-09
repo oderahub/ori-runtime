@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint — ruff
+        run: ruff check ori/ tests/ skills/
+
+      - name: Check license headers
+        run: |
+          missing=$(grep -rL "SPDX-License-Identifier: Apache-2.0" ori/ tests/ --include="*.py" || true)
+          if [ -n "$missing" ]; then
+            echo "❌ Missing Apache-2.0 license header in:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "✅ All Python files have license headers"
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ -v \
+            --cov=ori \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            -m "not hardware"
+
+      - name: Validate bundled skills load cleanly
+        run: |
+          python -c "
+          import asyncio, sys
+          from ori.skills.loader import SkillLoader
+          import pathlib
+
+          skills_dir = pathlib.Path('skills')
+          loader = SkillLoader()
+          failed = []
+
+          for skill_dir in sorted(skills_dir.iterdir()):
+              if not skill_dir.is_dir():
+                  continue
+              try:
+                  skill = loader.load_one(skill_dir)
+                  print(f'  ✅ {skill.name} v{skill.version} — {len(skill.triggers)} triggers')
+              except Exception as exc:
+                  print(f'  ❌ {skill_dir.name}: {exc}')
+                  failed.append(skill_dir.name)
+
+          if failed:
+              print(f'Failed to load: {failed}')
+              sys.exit(1)
+          print('All bundled skills loaded cleanly.')
+          "
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: matrix.python-version == '3.11'
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false

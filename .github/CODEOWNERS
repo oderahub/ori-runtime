@@ -1,0 +1,25 @@
+# Ori Runtime — Code Owners
+#
+# GitHub enforces these rules automatically:
+# - A PR touching any file under /ori/ cannot be merged without maintainer approval
+# - A PR touching only /skills/ can be reviewed by any designated maintainer
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ── Core Runtime — maintainer review required ──────────────────────────────────
+# Changes here affect physical hardware. Every line must be understood and approved.
+/ori/                   @AdeGneus
+/tests/                 @AdeGneus
+/pyproject.toml         @AdeGneus
+/requirements*.txt      @AdeGneus
+/requirements*.in       @AdeGneus
+/CLAUDE.md              @AdeGneus
+/AGENTS.md              @AdeGneus
+/PRINCIPLES.md          @AdeGneus
+/.github/               @AdeGneus
+
+# ── Bundled Skills — maintainer review required ────────────────────────────────
+# Bundled skills use _load_hooks_direct() which bypasses the sandbox.
+# They ship with the runtime and are implicitly trusted. Core team review required.
+# Community skill contributions do NOT go here — they go to the Skills Hub repo.
+/skills/                @AdeGneus

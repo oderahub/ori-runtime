@@ -1,0 +1,83 @@
+name: Bug Report
+description: Something is broken or behaving incorrectly
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before filing a bug:** check if this is a known issue by searching open issues.
+        For security vulnerabilities, do **not** open a GitHub issue — see CONTRIBUTING.md §Security.
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer is affected?
+      options:
+        - HAL / Sensor Adapter
+        - EventBus / Deduplicator
+        - Rule Engine
+        - Intelligence Elevator
+        - Action Dispatcher
+        - Skill Loader
+        - State Store
+        - Runtime / Event Loop
+        - Skill (which one?)
+        - Other / Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure ori.yaml with...
+        2. Run ori start
+        3. Trigger condition by...
+        4. See error in logs
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - OS: macOS 14 / Ubuntu 24.04 / Raspberry Pi OS Bookworm
+        - Python: 3.11.x
+        - ori-runtime version: 0.1.0
+        - Hardware (if relevant): Raspberry Pi 4, I2C ADS1115
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste log lines. Redact any credentials or identifying information.
+      render: text
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues before filing this
+          required: true
+        - label: This is not a security vulnerability (security issues go to the maintainers directly)
+          required: true

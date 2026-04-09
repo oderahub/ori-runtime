@@ -1,0 +1,72 @@
+# Pre-commit hooks for Ori Runtime
+#
+# Install once: pre-commit install
+# Run manually: pre-commit run --all-files
+# Update hooks:  pre-commit autoupdate
+#
+# This is opt-in for contributors. CI enforces the same checks unconditionally.
+
+repos:
+  # ── Ruff: lint + format ──────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(ori|tests|skills)/.*\.py$
+      - id: ruff-format
+        files: ^(ori|tests|skills)/.*\.py$
+
+  # ── License header check ─────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: license-header
+        name: Apache-2.0 license header
+        language: python
+        entry: python -c "
+import sys, pathlib
+missing = [
+    str(f) for f in pathlib.Path('.').rglob('*.py')
+    if any(p in str(f) for p in ['ori/', 'tests/'])
+    and 'SPDX-License-Identifier: Apache-2.0' not in f.read_text()
+]
+if missing:
+    print('Missing license header:\\n' + '\\n'.join(missing))
+    sys.exit(1)
+"
+        pass_filenames: false
+
+  # ── Commit message format ────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: conventional-commit
+        name: Conventional commit format
+        language: python
+        stages: [commit-msg]
+        entry: python -c "
+import sys, re
+msg = open(sys.argv[1]).read().split('\n')[0]
+pattern = r'^(feat|fix|docs|test|skill|refactor|perf|build|ci|chore|revert|security)(\([a-z0-9/-]+\))?: .{1,100}$'
+if not re.match(pattern, msg):
+    print(f'❌ Commit message does not follow Conventional Commits format.')
+    print(f'   Got: {msg!r}')
+    print(f'   Expected: type(scope): description')
+    print(f'   Valid types: feat fix docs test skill refactor perf build ci chore revert security')
+    sys.exit(1)
+"
+        args: [.git/COMMIT_EDITMSG]
+        pass_filenames: false
+
+  # ── Basic file hygiene ───────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+        exclude: \.md$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: no-commit-to-branch
+        args: [--branch, main]

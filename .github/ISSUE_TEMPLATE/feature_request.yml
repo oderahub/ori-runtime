@@ -1,0 +1,69 @@
+name: Feature Request
+description: Propose a new adapter, skill, action, or runtime capability
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Read first:** All feature requests are evaluated through the six design lenses in [PRINCIPLES.md](../PRINCIPLES.md).
+        The most important question: does this make Ori more autonomous and capable, or more passive?
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: What kind of feature?
+      options:
+        - New HAL adapter (new sensor protocol)
+        - New skill
+        - New action executor
+        - New reasoning tier / LLM backend
+        - Core runtime change
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tier
+    attributes:
+      label: If this involves a skill — what action tier?
+      description: Leave blank for non-skill features.
+      options:
+        - "N/A"
+        - "Tier A — Informational (autonomous alerts)"
+        - "Tier B — Soft Physical (autonomous with notification)"
+        - "Tier C — Hard Physical (approval required)"
+        - "Tier D — Safety-Critical (deterministic, immediate)"
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the real-world scenario. Who is the operator? What are they dealing with?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would this work? What would the operator experience?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you consider? Why is this the right approach?
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have read PRINCIPLES.md and this feature aligns with the six design lenses
+          required: true
+        - label: This makes Ori more capable of autonomous action — not just better at monitoring
+          required: true
+        - label: For Tier C or D features, I understand I need maintainer sign-off before writing code

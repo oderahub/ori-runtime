@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Africa/Lagos
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "automated"
+    ignore:
+      # Pin major versions manually — breaking changes need a human decision
+      - dependency-name: "anthropic"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "twilio"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "build(deps)"
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Africa/Lagos
+    labels:
+      - "dependencies"
+      - "automated"
+    commit-message:
+      prefix: "ci(deps)"
