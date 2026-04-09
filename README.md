@@ -64,6 +64,8 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 
 ## Architecture
 
+![Ori Runtime Architecture](/docs/architecture.svg)
+
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │  Layer 6  Business       ori-cloud · dashboard · fleet       │
