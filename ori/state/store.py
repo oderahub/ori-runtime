@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import datetime
+import hashlib
 import json
 import sqlite3
 from functools import partial
@@ -71,6 +73,22 @@ CREATE TABLE IF NOT EXISTS causal_memory (
     created_at  INTEGER NOT NULL,
     last_seen   INTEGER NOT NULL,
     hit_count   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS causal_memory_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_key TEXT NOT NULL,
+    trigger_name TEXT NOT NULL,
+    proposed_action TEXT NOT NULL,
+    operator_response TEXT,
+    device_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    value_bucket REAL,
+    time_of_day_hour INTEGER,
+    day_of_week INTEGER,
+    rejected_at INTEGER NOT NULL,
+    expiry_ms INTEGER,
+    UNIQUE(pattern_key, proposed_action)
 );
 
 CREATE TABLE IF NOT EXISTS skill_state (
@@ -718,6 +736,133 @@ class StateStore:
             (pattern_key, resolution, confidence, now, now),
         )
         self._conn.commit()
+
+    # ─── causal_memory_rejections ────────────────────────────────────────────
+
+    async def store_rejection(
+        self,
+        pattern_key: str,
+        trigger_name: str,
+        proposed_action: str,
+        operator_response: str | None,
+        device_id: str,
+        sensor_type: str,
+        value_bucket: float,
+        time_of_day_hour: int,
+        day_of_week: int,
+        expiry_days: int = 30,
+    ) -> None:
+        await self._run(
+            self._store_rejection_sync,
+            pattern_key,
+            trigger_name,
+            proposed_action,
+            operator_response,
+            device_id,
+            sensor_type,
+            value_bucket,
+            time_of_day_hour,
+            day_of_week,
+            expiry_days,
+        )
+
+    def _store_rejection_sync(
+        self,
+        pattern_key: str,
+        trigger_name: str,
+        proposed_action: str,
+        operator_response: str | None,
+        device_id: str,
+        sensor_type: str,
+        value_bucket: float,
+        time_of_day_hour: int,
+        day_of_week: int,
+        expiry_days: int,
+    ) -> None:
+        assert self._conn is not None
+        rejected_at = _now_ms()
+        expiry_ms: int | None = None
+        if expiry_days > 0:
+            expiry_ms = int(expiry_days * 86_400_000)
+        self._conn.execute(
+            """
+            INSERT INTO causal_memory_rejections
+                (pattern_key, trigger_name, proposed_action, operator_response,
+                 device_id, sensor_type, value_bucket, time_of_day_hour,
+                 day_of_week, rejected_at, expiry_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pattern_key, proposed_action) DO UPDATE SET
+                trigger_name = excluded.trigger_name,
+                operator_response = excluded.operator_response,
+                device_id = excluded.device_id,
+                sensor_type = excluded.sensor_type,
+                value_bucket = excluded.value_bucket,
+                time_of_day_hour = excluded.time_of_day_hour,
+                day_of_week = excluded.day_of_week,
+                rejected_at = excluded.rejected_at,
+                expiry_ms = excluded.expiry_ms
+            """,
+            (
+                pattern_key,
+                trigger_name,
+                proposed_action,
+                operator_response,
+                device_id,
+                sensor_type,
+                value_bucket,
+                time_of_day_hour,
+                day_of_week,
+                rejected_at,
+                expiry_ms,
+            ),
+        )
+        self._conn.commit()
+
+    async def lookup_rejection(self, pattern_key: str) -> Optional[dict]:
+        return await self._run(self._lookup_rejection_sync, pattern_key)
+
+    def _lookup_rejection_sync(self, pattern_key: str) -> Optional[dict]:
+        assert self._conn is not None
+        row = self._conn.execute(
+            """
+            SELECT id, pattern_key, trigger_name, proposed_action, operator_response,
+                   device_id, sensor_type, value_bucket, time_of_day_hour,
+                   day_of_week, rejected_at, expiry_ms
+            FROM causal_memory_rejections
+            WHERE pattern_key = ?
+            ORDER BY rejected_at DESC
+            LIMIT 1
+            """,
+            (pattern_key,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        expiry_ms = row["expiry_ms"]
+        if expiry_ms is not None:
+            expires_at = int(row["rejected_at"]) + int(expiry_ms)
+            if expires_at < _now_ms():
+                return None
+
+        return dict(row)
+
+    @staticmethod
+    def _build_rejection_pattern_key(
+        sensor_type: str,
+        trigger_name: str,
+        proposed_action: str,
+        value: float,
+        timestamp_ms: int,
+    ) -> str:
+        value_bucket = round(float(value) * 2.0) / 2.0
+        dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000.0, tz=datetime.timezone.utc)
+        two_hour_bucket = (dt.hour // 2) * 2
+        day_of_week = dt.weekday()
+        raw = (
+            f"{sensor_type}|{trigger_name}|{proposed_action}|"
+            f"{value_bucket:.1f}|{two_hour_bucket}|{day_of_week}"
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     # ─── skill_state ──────────────────────────────────────────────────────────
 
