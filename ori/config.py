@@ -36,6 +36,7 @@ class DeviceConfig:
     location: str
     rated_capacity_amps: float = 10.0
     timezone: str = "Africa/Lagos"
+    deployment_type: str = "pi"  # 'pi' | 'phone' | 'server'
 
 
 @dataclass
@@ -190,6 +191,16 @@ class Config:
                             f"Set it in your .env file before starting Ori."
                         )
 
+        if device.deployment_type == "phone":
+            logger.info(
+                "[config] phone deployment mode enabled — no GPIO/relay hardware path is expected on this target."
+            )
+            if bool(actions.relay.get("enabled", False)):
+                logger.warning(
+                    "[config] deployment_type=phone with actions.relay.enabled=true. "
+                    "Relay actions are not supported on phone gateways."
+                )
+
         return cls(
             device=device,
             sensors=sensors,
@@ -229,12 +240,19 @@ def _parse_device(data: Any) -> DeviceConfig:
             f"device.id must not contain spaces, got: '{device_id}'"
         )
 
+    deployment_type = str(data.get("deployment_type", "pi")).strip().lower()
+    if deployment_type not in {"pi", "phone", "server"}:
+        raise ConfigValidationError(
+            "device.deployment_type must be one of ['phone', 'pi', 'server']."
+        )
+
     return DeviceConfig(
         id=device_id,
         name=_require_str(data, "name", "device"),
         location=_require_str(data, "location", "device"),
         rated_capacity_amps=float(data.get("rated_capacity_amps", 10.0)),
         timezone=str(data.get("timezone", "Africa/Lagos")),
+        deployment_type=deployment_type,
     )
 
 

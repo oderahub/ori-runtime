@@ -200,6 +200,61 @@ class TestDeviceValidation:
         cfg = Config.load(yaml_path)
         assert cfg.device.rated_capacity_amps == 10.0
 
+    def test_phone_deployment_type(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: phone-01
+              name: Phone Gateway
+              location: Lagos
+              deployment_type: phone
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              relay:
+                enabled: false
+                gpio_pin: 26
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.deployment_type == "phone"
+
+    def test_rejects_invalid_deployment_type(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_type: edge-phone
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="deployment_type"):
+            Config.load(yaml_path)
+
 
 # ─── SensorConfig validation ──────────────────────────────────────────────────
 
@@ -298,6 +353,16 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "growatt"
+
+    def test_accepts_usb_serial_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: mains-power\n    type: usb_power\n    protocol: usb_serial\n    poll_interval_ms: 2000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "usb_serial"
 
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
