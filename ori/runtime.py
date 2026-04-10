@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ori.actions.logger import LoggerAction
+from ori.actions.process_manager import ProcessManagerAction
 from ori.actions.relay import RelayAction
 from ori.actions.sms import SMSAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
@@ -57,6 +58,7 @@ class OriRuntime:
         self._adapters: list[BaseAdapter] = []
         self._state_store: StateStore | None = None
         self._background_tasks: list[asyncio.Task] = []
+        self._sms_action: SMSAction | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -78,9 +80,14 @@ class OriRuntime:
         file_handler = RotatingFileHandler(
             config.logging.file,
             maxBytes=config.logging.max_bytes,
-            backupCount=config.logging.backup_count
+            backupCount=config.logging.backup_count,
         )
-        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        )
         root_logger.addHandler(file_handler)
 
         logger.info(
@@ -96,8 +103,10 @@ class OriRuntime:
 
         # ── Step C: Instantiate action executors and ActionDispatcher ─────────
         whatsapp_action = WhatsAppAction(provider=TwilioProvider())
-        sms_action = SMSAction()
+        sms_action = SMSAction(state_store=self._state_store)
+        self._sms_action = sms_action
         logger_action = LoggerAction()
+        process_manager_action = ProcessManagerAction()
 
         relay_action: RelayAction | None = None
         if config.actions.relay.get("enabled", False):
@@ -131,14 +140,17 @@ class OriRuntime:
                 _approval_timeout = int(t)
                 break
 
+        primary_alert_channel = config.actions.primary_alert_channel
+        alert_sender = sms_action if primary_alert_channel == "sms" else whatsapp_action
+
         dispatcher = ActionDispatcher(
             state_store=self._state_store,
-            alert_sender=whatsapp_action,
+            alert_sender=alert_sender,
             config={
                 "operator_contact": _operator_contact,
                 "secondary_contact": _secondary_contact,
                 "approval_timeout_seconds": _approval_timeout,
-                "primary_alert_channel": config.actions.primary_alert_channel,
+                "primary_alert_channel": primary_alert_channel,
                 "device_timezone": config.device.timezone,
                 "log_action_decisions": config.logging.log_action_decisions,
                 "log_approval_workflow": config.logging.log_approval_workflow,
@@ -158,6 +170,23 @@ class OriRuntime:
             await sms_action.send(message=msg, to_number=_operator_contact)
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
+
+        async def _exec_terminate_process(action: str, ctx: SkillContext) -> None:
+            pid, name = _process_target_from_context(ctx)
+            if pid is None or not name:
+                logger.warning(
+                    "[runtime] terminate_process requested but no unambiguous process target is available"
+                )
+                return
+            ok = await process_manager_action.terminate_process(pid=pid, name=name)
+            if not ok:
+                logger.warning(
+                    "[runtime] terminate_process failed for pid=%s name=%r",
+                    pid,
+                    name,
+                )
+
+        dispatcher.register_executor("terminate_process", _exec_terminate_process)
 
         # log_to_dashboard — override built-in with device_id from config
         async def _exec_log_to_dashboard(action: str, *_: Any) -> None:
@@ -314,6 +343,13 @@ class OriRuntime:
             await self._state_store.close()
 
         logger.info("[runtime] shutdown complete")
+
+    async def ingest_sms_webhook(self, payload: dict[str, Any]) -> bool:
+        """Store one inbound SMS webhook payload for approval workflows."""
+        if self._sms_action is None:
+            logger.warning("[runtime] SMSAction is not initialised")
+            return False
+        return await self._sms_action.ingest_incoming_webhook(payload)
 
     # ── Background tasks ──────────────────────────────────────────────────────
 
@@ -481,6 +517,61 @@ def _message_from_context(ctx: SkillContext, fallback: str) -> str:
             f"{r.value} {r.unit}"
         )
     return fallback
+
+
+def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
+    """Resolve a single process target for `terminate_process`.
+
+    Resolution order:
+    1. Explicit event context override: `event.context["terminate_process"]`
+       with `{pid, name}`.
+    2. Exactly one process in `event.reading.metadata["processes"]`.
+    """
+    if not ctx or not ctx.event:
+        return None, ""
+
+    terminate_ctx = ctx.event.context.get("terminate_process", {})
+    if isinstance(terminate_ctx, dict):
+        pid = terminate_ctx.get("pid")
+        name = terminate_ctx.get("name")
+        if isinstance(pid, int) and isinstance(name, str) and name.strip():
+            return pid, name.strip()
+        if (
+            isinstance(pid, str)
+            and pid.isdigit()
+            and isinstance(name, str)
+            and name.strip()
+        ):
+            return int(pid), name.strip()
+
+    reading = ctx.event.reading
+    if reading is None:
+        return None, ""
+
+    processes = reading.metadata.get("processes", [])
+    if not isinstance(processes, list):
+        return None, ""
+
+    valid: list[tuple[int, str]] = []
+    for proc in processes:
+        if not isinstance(proc, dict):
+            continue
+        pid = proc.get("pid")
+        name = proc.get("name")
+        if isinstance(pid, int) and isinstance(name, str) and name.strip():
+            valid.append((pid, name.strip()))
+        elif (
+            isinstance(pid, str)
+            and pid.isdigit()
+            and isinstance(name, str)
+            and name.strip()
+        ):
+            valid.append((int(pid), name.strip()))
+
+    if len(valid) == 1:
+        return valid[0]
+
+    return None, ""
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

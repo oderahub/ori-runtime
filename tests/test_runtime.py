@@ -16,7 +16,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ori.runtime import OriRuntime
+from ori.network.events import OriEvent, SensorReading
+from ori.reasoning.elevator import SkillContext
+from ori.runtime import OriRuntime, _process_target_from_context
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -352,3 +354,56 @@ class TestSensorPolling:
         assert read_count >= 2, "Expected at least 2 poll attempts"
         warning_msgs = [r.message for r in caplog.records if "read failed" in r.message]
         assert warning_msgs, "Expected 'read failed' warning log"
+
+
+class TestProcessTargetResolution:
+    def _ctx(self, *, context: dict | None = None, metadata: dict | None = None):
+        reading = SensorReading(
+            sensor_id="sleep-blocker",
+            sensor_type="sleep_blocking_process",
+            value=1.0,
+            unit="count",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+            metadata=metadata or {},
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        event.context = context or {}
+        return SkillContext(skill=None, event=event, state_store=None)
+
+    def test_prefers_explicit_context_target(self):
+        ctx = self._ctx(
+            context={"terminate_process": {"pid": 1234, "name": "Zoom"}},
+            metadata={"processes": [{"pid": 999, "name": "Other"}]},
+        )
+        assert _process_target_from_context(ctx) == (1234, "Zoom")
+
+    def test_reads_single_metadata_process(self):
+        ctx = self._ctx(metadata={"processes": [{"pid": 2222, "name": "Slack"}]})
+        assert _process_target_from_context(ctx) == (2222, "Slack")
+
+    def test_returns_none_on_ambiguous_processes(self):
+        ctx = self._ctx(
+            metadata={
+                "processes": [
+                    {"pid": 1, "name": "A"},
+                    {"pid": 2, "name": "B"},
+                ]
+            }
+        )
+        assert _process_target_from_context(ctx) == (None, "")
+
+
+class TestWebhookIngest:
+    async def test_ingest_sms_webhook_returns_false_without_sms_action(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        ok = await runtime.ingest_sms_webhook({"from": "+234", "text": "YES"})
+        assert ok is False
+
+    async def test_ingest_sms_webhook_delegates_to_sms_action(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._sms_action = AsyncMock()
+        runtime._sms_action.ingest_incoming_webhook.return_value = True
+        ok = await runtime.ingest_sms_webhook({"from": "+234", "text": "YES"})
+        assert ok is True
+        runtime._sms_action.ingest_incoming_webhook.assert_awaited_once()
