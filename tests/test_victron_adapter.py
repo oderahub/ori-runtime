@@ -58,9 +58,10 @@ class _FakeMessageStream:
 
 
 class _FakeClient:
-    def __init__(self, *, hostname: str, port: int):
+    def __init__(self, *, hostname: str, port: int, **kwargs):
         self.hostname = hostname
         self.port = port
+        self.kwargs = kwargs
         self.subscriptions: list[str] = []
         self._queue: asyncio.Queue = asyncio.Queue()
         self.closed = False
@@ -171,4 +172,57 @@ class TestVictronAdapter:
             with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
                 await adapter.read("victron-01")
 
+            await adapter.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_auth_and_client_options(self):
+        adapter = VictronAdapter()
+        fake_aiomqtt = SimpleNamespace(Client=_FakeClient)
+
+        with (
+            patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+            patch("ori.hal.mqtt_base._aiomqtt", fake_aiomqtt),
+        ):
+            cfg = _config()
+            cfg.update(
+                {
+                    "mqtt_username": "operator",
+                    "mqtt_password": "secret",
+                    "mqtt_client_id": "ori-victron-01",
+                    "mqtt_keepalive_s": 90,
+                    "mqtt_clean_session": True,
+                }
+            )
+            await adapter.connect(cfg)
+
+            assert isinstance(adapter._client, _FakeClient)
+            assert adapter._client.kwargs["username"] == "operator"
+            assert adapter._client.kwargs["password"] == "secret"
+            assert adapter._client.kwargs["identifier"] == "ori-victron-01"
+            assert adapter._client.kwargs["keepalive"] == 90
+            assert adapter._client.kwargs["clean_session"] is True
+            await adapter.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_builds_tls_context_when_enabled(self):
+        adapter = VictronAdapter()
+        fake_aiomqtt = SimpleNamespace(Client=_FakeClient)
+
+        with (
+            patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+            patch("ori.hal.mqtt_base._aiomqtt", fake_aiomqtt),
+        ):
+            cfg = _config()
+            cfg.update(
+                {
+                    "mqtt_tls_enabled": True,
+                    "mqtt_tls_insecure": True,
+                }
+            )
+            await adapter.connect(cfg)
+
+            assert isinstance(adapter._client, _FakeClient)
+            tls_context = adapter._client.kwargs.get("tls_context")
+            assert tls_context is not None
+            assert tls_context.check_hostname is False
             await adapter.close()
