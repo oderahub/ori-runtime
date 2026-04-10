@@ -499,6 +499,39 @@ class TestReasoningConfig:
         cfg = Config.load(yaml_path)
         assert cfg.reasoning.escalation_threshold == pytest.approx(0.85)
 
+    def test_energy_aware_reasoning_parsed(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+              energy_aware_reasoning:
+                enabled: true
+                throttle_threshold_percent: 20
+                critical_threshold_percent: 10
+                battery_sensor_id: inverter-battery
+                alert_on_throttle: true
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        ear = cfg.reasoning.energy_aware_reasoning
+        assert ear["enabled"] is True
+        assert ear["battery_sensor_id"] == "inverter-battery"
+
 
 # ─── ActionChannelConfig validation ───────────────────────────────────────────
 

@@ -63,6 +63,7 @@ class ReasoningConfig:
     model_path: str
     offline_fallback: str
     escalation_threshold: float = 0.70
+    energy_aware_reasoning: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -343,12 +344,19 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'reasoning' section must be a mapping.")
 
+    energy_aware = data.get("energy_aware_reasoning") or {}
+    if not isinstance(energy_aware, dict):
+        raise ConfigValidationError(
+            "'reasoning.energy_aware_reasoning' must be a mapping when provided."
+        )
+
     return ReasoningConfig(
         default_tier=str(data.get("default_tier", "local")),
         local_model=str(data.get("local_model", "")),
         model_path=str(data.get("model_path", "")),
         offline_fallback=str(data.get("offline_fallback", "rule")),
         escalation_threshold=float(data.get("escalation_threshold", 0.70)),
+        energy_aware_reasoning=energy_aware,
     )
 
 

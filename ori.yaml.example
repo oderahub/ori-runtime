@@ -106,6 +106,12 @@ reasoning:
   model_path: /home/pi/models/       # directory where .gguf model files live
   offline_fallback: rule             # tier to use when network unavailable
   escalation_threshold: 0.70        # escalate if confidence below this
+  energy_aware_reasoning:
+    enabled: true
+    throttle_threshold_percent: 20
+    critical_threshold_percent: 10
+    battery_sensor_id: inverter-battery
+    alert_on_throttle: true
 
 
 gateway:
