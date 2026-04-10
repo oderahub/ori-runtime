@@ -1,7 +1,10 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import time
+
+import pytest
 
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -346,6 +349,52 @@ class TestNoSubscriberWarning:
             await bus.publish(_event("current_clamp"))
 
         assert not any("no subscribers" in r.message for r in caplog.records)
+
+
+# ─── publish — timeout / strict mode ──────────────────────────────────────────
+
+
+class TestPublishTimeoutAndStrict:
+    async def test_handler_timeout_logs_and_continues(self, caplog):
+        import logging
+
+        bus = EventBus(handler_timeout_s=0.01)
+        delivered: list[int] = []
+
+        async def slow(_event):
+            await asyncio.sleep(0.05)
+
+        async def good(_event):
+            delivered.append(1)
+
+        bus.subscribe("current_clamp", slow)
+        bus.subscribe("current_clamp", good)
+
+        with caplog.at_level(logging.ERROR, logger="ori.network.event_bus"):
+            await bus.publish(_event("current_clamp"))
+
+        assert delivered == [1]
+        assert any("timed out" in r.message for r in caplog.records)
+
+    async def test_handler_timeout_raises_in_strict_mode(self):
+        bus = EventBus(handler_timeout_s=0.01, strict_exceptions=True)
+
+        async def slow(_event):
+            await asyncio.sleep(0.05)
+
+        bus.subscribe("current_clamp", slow)
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.publish(_event("current_clamp"))
+
+    async def test_handler_exception_raises_in_strict_mode(self):
+        bus = EventBus(strict_exceptions=True)
+
+        async def bad(_event):
+            raise RuntimeError("boom")
+
+        bus.subscribe("current_clamp", bad)
+        with pytest.raises(RuntimeError, match="boom"):
+            await bus.publish(_event("current_clamp"))
 
     async def test_no_warning_when_specific_subscriber_exists(self, caplog):
         import logging
