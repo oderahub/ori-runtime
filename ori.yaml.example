@@ -14,6 +14,7 @@ device:
   id: energy-monitor-ikeja-01        # unique, no spaces, no special chars
   name: Ikeja Office Energy Monitor
   location: Lagos, Nigeria
+  deployment_type: pi                # pi | phone | server
   rated_capacity_amps: 10.0          # used for Tier D threshold calculations
                                      # set this to the actual rated amperage
                                      # of your main circuit
@@ -77,6 +78,14 @@ sensors:
   #   type: cpu_temp
   #   protocol: psutil
   #   poll_interval_ms: 10000
+
+  # ─── Phone Gateway USB meter (Termux path) ───────────────────────────────
+  # - id: mains-power
+  #   type: usb_power
+  #   protocol: usb_serial
+  #   device_path: /dev/ttyUSB0
+  #   baud_rate: 9600
+  #   poll_interval_ms: 2000
 
 
 skills:

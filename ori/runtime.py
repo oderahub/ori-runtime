@@ -110,9 +110,10 @@ class OriRuntime:
         root_logger.addHandler(file_handler)
 
         logger.info(
-            "[runtime] config loaded — device=%s location=%s",
+            "[runtime] config loaded — device=%s location=%s deployment=%s",
             config.device.id,
             config.device.location,
+            config.device.deployment_type,
         )
 
         # ── Step B: Open StateStore ───────────────────────────────────────────
@@ -128,7 +129,15 @@ class OriRuntime:
         process_manager_action = ProcessManagerAction()
 
         relay_action: RelayAction | None = None
-        if config.actions.relay.get("enabled", False):
+        relay_requested = bool(config.actions.relay.get("enabled", False))
+        if config.device.deployment_type == "phone" and relay_requested:
+            logger.warning(
+                "[runtime] deployment_type=phone with relay enabled; skipping relay initialization "
+                "(phone gateway supports Tier A/B software actions only)."
+            )
+            relay_requested = False
+
+        if relay_requested:
             relay_action = RelayAction()
             gpio_pin: int = config.actions.relay["gpio_pin"]
             try:

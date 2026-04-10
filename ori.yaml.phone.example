@@ -1,0 +1,54 @@
+# ori.yaml.phone.example
+# Phone-as-Gateway deployment profile (Termux on Android)
+
+device:
+  id: phone-gateway-ikeja-01
+  name: Ikeja Office Phone Gateway
+  location: Lagos, Nigeria
+  timezone: Africa/Lagos
+  deployment_type: phone
+
+sensors:
+  - id: mains-power
+    type: usb_power
+    protocol: usb_serial
+    device_path: /dev/ttyUSB0
+    baud_rate: 9600
+    poll_interval_ms: 2000
+
+skills:
+  - name: energy-anomaly-detector
+    version: "0.2.1"
+    config: {}
+
+reasoning:
+  default_tier: local
+  local_model: qwen2.5-0.5b-instruct-q4_k_m
+  model_path: /data/data/com.termux/files/home/models/
+  offline_fallback: rule
+
+gateway:
+  enabled: false
+  broker_url: ""
+
+actions:
+  primary_alert_channel: sms
+  operator_contact: "+234XXXXXXXXXX"
+  secondary_contact: ""
+  whatsapp:
+    enabled: false
+  sms:
+    enabled: false
+  relay:
+    enabled: false
+    gpio_pin: 26
+
+hal:
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_s: 300
+    success_threshold: 2
+
+logging:
+  level: INFO
+  file: ori.log

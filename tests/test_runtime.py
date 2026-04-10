@@ -241,6 +241,61 @@ class TestLifecycle:
             root.removeHandler(h)
             h.close()
 
+    async def test_phone_deployment_skips_relay_init(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        _patch_external(monkeypatch)
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            textwrap.dedent("""\
+                device:
+                  id: phone-dev-01
+                  name: Phone Gateway
+                  location: Lagos
+                  deployment_type: phone
+                sensors:
+                  - id: cpu-sensor
+                    type: cpu_percent
+                    protocol: psutil
+                    poll_interval_ms: 200
+                skills: []
+                reasoning:
+                  default_tier: local
+                  local_model: ""
+                  model_path: ""
+                  offline_fallback: rule
+                gateway:
+                  enabled: false
+                  broker_url: ""
+                actions:
+                  primary_alert_channel: sms
+                  whatsapp:
+                    enabled: false
+                  sms:
+                    enabled: false
+                  relay:
+                    enabled: true
+                    gpio_pin: 26
+            """),
+            encoding="utf-8",
+        )
+        runtime = OriRuntime(config_path=str(cfg))
+        mocked_connect = AsyncMock(side_effect=AssertionError("relay should not connect"))
+        monkeypatch.setattr("ori.actions.relay.RelayAction.connect", mocked_connect)
+
+        async def _stop():
+            await asyncio.sleep(0.2)
+            await runtime.stop()
+
+        with caplog.at_level(logging.WARNING):
+            await asyncio.gather(runtime.start(), _stop())
+
+        assert mocked_connect.await_count == 0
+        assert any(
+            "deployment_type=phone with relay enabled" in r.message
+            for r in caplog.records
+        )
+
 
 class TestStartupLogs:
     async def test_startup_logs_skill_tiers(self, minimal_config, monkeypatch, caplog):
