@@ -19,29 +19,46 @@ logger = logging.getLogger(__name__)
 _ALLOWED_ATTRIBUTE_ROOTS = frozenset({"history"})
 
 # AST node types that are unconditionally safe in condition expressions.
-_SAFE_NODE_TYPES: frozenset[type] = frozenset({
-    # Structure
-    ast.Expression,
-    ast.Load,
-    # Values
-    ast.Name,
-    ast.Constant,
-    # Comparisons
-    ast.Compare,
-    ast.Eq, ast.NotEq,
-    ast.Lt, ast.LtE, ast.Gt, ast.GtE,
-    ast.Is, ast.IsNot, ast.In, ast.NotIn,
-    # Boolean logic
-    ast.BoolOp,
-    ast.And, ast.Or,
-    # Arithmetic
-    ast.BinOp,
-    ast.Add, ast.Sub, ast.Mult, ast.Div,
-    ast.FloorDiv, ast.Mod, ast.Pow,
-    # Unary
-    ast.UnaryOp,
-    ast.Not, ast.UAdd, ast.USub,
-})
+_SAFE_NODE_TYPES: frozenset[type] = frozenset(
+    {
+        # Structure
+        ast.Expression,
+        ast.Load,
+        # Values
+        ast.Name,
+        ast.Constant,
+        # Comparisons
+        ast.Compare,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.Is,
+        ast.IsNot,
+        ast.In,
+        ast.NotIn,
+        # Boolean logic
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        # Arithmetic
+        ast.BinOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        # Unary
+        ast.UnaryOp,
+        ast.Not,
+        ast.UAdd,
+        ast.USub,
+    }
+)
 
 
 class RuleEngineSafetyError(Exception):
@@ -74,9 +91,11 @@ class EvalContext:
     expressions.
     """
 
-    def __init__(self, values: dict[str, Any], state_store: Any = None) -> None:
+    def __init__(
+        self, values: dict[str, Any], history_cache: dict[tuple, Any] | None = None
+    ) -> None:
         self._values = values
-        self._store = state_store
+        self._cache = history_cache or {}
 
     # ------------------------------------------------------------------
     # History helpers exposed as ``history.avg_24h(...)`` etc.
@@ -84,45 +103,42 @@ class EvalContext:
 
     def avg_24h(self, sensor_id: str) -> float:
         """Return 24-hour rolling average for *sensor_id* (0.0 if unavailable)."""
-        if self._store is None:
-            return 0.0
-        import asyncio
-
-        try:
-            loop = asyncio.get_event_loop()
-            readings = loop.run_until_complete(
-                self._store.get_sensor_history(sensor_id, limit=86_400)
-            )
-            if not readings:
-                return 0.0
-            return sum(r["value"] for r in readings) / len(readings)
-        except Exception:
-            logger.warning(
-                "EvalContext.avg_24h: could not fetch history for %r", sensor_id
-            )
-            return 0.0
+        return self._cache.get(("avg_24h", sensor_id), 0.0)
 
     def last_n(self, sensor_id: str, n: int) -> list[float]:
         """Return the last *n* values for *sensor_id* (empty list if unavailable)."""
-        if self._store is None:
-            return []
-        import asyncio
-
-        try:
-            loop = asyncio.get_event_loop()
-            readings = loop.run_until_complete(
-                self._store.get_sensor_history(sensor_id, limit=n)
-            )
-            return [r["value"] for r in readings]
-        except Exception:
-            logger.warning(
-                "EvalContext.last_n: could not fetch history for %r", sensor_id
-            )
-            return []
+        return self._cache.get(("last_n", sensor_id, n), [])
 
     def as_dict(self) -> dict[str, Any]:
         """Return the namespace dict used for ``eval``."""
         return {**self._values, "history": self}
+
+
+def _extract_history_calls(condition: str) -> list[tuple[str, list[Any]]]:
+    """Parse condition AST and return required history helper calls.
+
+    Returns a list of tuples like [('last_n', ['temp', 5]), ('avg_24h', ['power'])]
+    """
+    import ast
+
+    calls = []
+    try:
+        tree = ast.parse(condition, mode="eval")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute) and isinstance(
+                    node.func.value, ast.Name
+                ):
+                    if node.func.value.id == "history":
+                        method = node.func.attr
+                        try:
+                            args = [ast.literal_eval(arg) for arg in node.args]
+                            calls.append((method, args))
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    return calls
 
 
 def _validate_sensor_value(value: Any, rule_name: str) -> None:
@@ -244,7 +260,7 @@ class RuleEngine:
         # rule_name → last-fired timestamp
         self._cooldowns: dict[str, _CooldownRecord] = {}
 
-    def evaluate(
+    async def evaluate(
         self,
         event: OriEvent,
         rules: list[dict[str, Any]],
@@ -271,7 +287,9 @@ class RuleEngine:
         """
         base_ctx: dict[str, Any] = dict(context or {})
         if event.reading is not None:
-            first_rule_name = rules[0].get("name", "<unnamed>") if rules else "<unknown>"
+            first_rule_name = (
+                rules[0].get("name", "<unnamed>") if rules else "<unknown>"
+            )
             _validate_sensor_value(event.reading.value, first_rule_name)
             base_ctx.setdefault("value", event.reading.value)
             base_ctx.setdefault("sensor_id", event.reading.sensor_id)
@@ -279,14 +297,42 @@ class RuleEngine:
             base_ctx.setdefault("unit", event.reading.unit)
             base_ctx.setdefault("quality", event.reading.quality)
 
-        eval_ctx = EvalContext(base_ctx, state_store)
-        namespace = eval_ctx.as_dict()
+        # Pre-fetch history if needed to safely inject into synchronous eval.
+        history_cache: dict[tuple, Any] = {}
+        if state_store is not None:
+            for rule in rules:
+                condition = rule.get("condition", "")
+                if condition:
+                    _check_safety_ast(condition)
+                    for method, args in _extract_history_calls(condition):
+                        if method == "avg_24h" and len(args) == 1:
+                            key = ("avg_24h", args[0])
+                            if key not in history_cache:
+                                try:
+                                    val = await state_store.avg_last_hours(args[0], 24)
+                                    history_cache[key] = val if val is not None else 0.0
+                                except Exception:
+                                    history_cache[key] = 0.0
+                        elif method == "last_n" and len(args) == 2:
+                            key = ("last_n", args[0], args[1])
+                            if key not in history_cache:
+                                try:
+                                    readings = await state_store.get_history(
+                                        args[0], limit=args[1]
+                                    )
+                                    history_cache[key] = (
+                                        [r.value for r in readings] if readings else []
+                                    )
+                                except Exception:
+                                    history_cache[key] = []
+        else:
+            for rule in rules:
+                condition = rule.get("condition", "")
+                if condition:
+                    _check_safety_ast(condition)
 
-        # Safety-check all conditions up front before evaluating anything.
-        for rule in rules:
-            condition = rule.get("condition", "")
-            if condition:
-                _check_safety_ast(condition)
+        eval_ctx = EvalContext(base_ctx, history_cache)
+        namespace = eval_ctx.as_dict()
 
         for rule in rules:
             name: str = rule.get("name", "<unnamed>")

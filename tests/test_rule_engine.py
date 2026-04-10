@@ -88,98 +88,114 @@ class TestRuleResult:
 
 
 class TestEvaluate:
-    def test_condition_true_returns_match(self):
+    @pytest.mark.asyncio
+    async def test_condition_true_returns_match(self):
         engine = RuleEngine()
-        result = engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
         assert result.matched is True
         assert result.rule_name == "overcurrent"
 
-    def test_condition_false_returns_no_match(self):
+    @pytest.mark.asyncio
+    async def test_condition_false_returns_no_match(self):
         engine = RuleEngine()
-        result = engine.evaluate(_event(value=5.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(_event(value=5.0), [_rule(condition="value > 10.0")])
         assert result.matched is False
 
-    def test_first_matching_rule_wins(self):
+    @pytest.mark.asyncio
+    async def test_first_matching_rule_wins(self):
         engine = RuleEngine()
         rules = [
             _rule(name="low", condition="value > 3.0", action_tier="A"),
             _rule(name="high", condition="value > 8.0", action_tier="B"),
         ]
-        result = engine.evaluate(_event(value=10.0), rules)
+        result = await engine.evaluate(_event(value=10.0), rules)
         assert result.rule_name == "low"
 
-    def test_second_rule_matches_when_first_does_not(self):
+    @pytest.mark.asyncio
+    async def test_second_rule_matches_when_first_does_not(self):
         engine = RuleEngine()
         rules = [
             _rule(name="high", condition="value > 20.0", action_tier="C"),
             _rule(name="medium", condition="value > 8.0", action_tier="B"),
         ]
-        result = engine.evaluate(_event(value=10.0), rules)
+        result = await engine.evaluate(_event(value=10.0), rules)
         assert result.rule_name == "medium"
         assert result.action_tier == "B"
 
-    def test_no_rules_returns_no_match(self):
+    @pytest.mark.asyncio
+    async def test_no_rules_returns_no_match(self):
         engine = RuleEngine()
-        assert engine.evaluate(_event(), []).matched is False
+        res = await engine.evaluate(_event(), [])
+        assert res.matched is False
 
-    def test_empty_condition_skipped(self):
+    @pytest.mark.asyncio
+    async def test_empty_condition_skipped(self):
         engine = RuleEngine()
         rules = [{"name": "empty", "condition": "", "action_tier": "A"}]
-        assert engine.evaluate(_event(), rules).matched is False
+        res = await engine.evaluate(_event(), rules)
+        assert res.matched is False
 
-    def test_result_carries_action_tier(self):
+    @pytest.mark.asyncio
+    async def test_result_carries_action_tier(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0),
             [_rule(condition="value > 10.0", action_tier="B")],
         )
         assert result.action_tier == "B"
 
-    def test_result_carries_action(self):
+    @pytest.mark.asyncio
+    async def test_result_carries_action(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0),
             [_rule(condition="value > 10.0", action="trip_breaker")],
         )
         assert result.action == "trip_breaker"
 
-    def test_result_carries_escalate_to(self):
+    @pytest.mark.asyncio
+    async def test_result_carries_escalate_to(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0),
             [_rule(condition="value > 10.0", escalate_to="local_slm")],
         )
         assert result.escalate_to == "local_slm"
 
-    def test_confidence_is_1_for_rule_match(self):
+    @pytest.mark.asyncio
+    async def test_confidence_is_1_for_rule_match(self):
         engine = RuleEngine()
-        result = engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
         assert result.confidence == 1.0
 
-    def test_sensor_context_injected_from_reading(self):
+    @pytest.mark.asyncio
+    async def test_sensor_context_injected_from_reading(self):
         """sensor_id, sensor_type, unit, quality are available in conditions."""
         engine = RuleEngine()
         rules = [
             _rule(name="r", condition="sensor_type == 'current_clamp'", action_tier="A")
         ]
-        assert engine.evaluate(_event(), rules).matched is True
+        res = await engine.evaluate(_event(), rules)
+        assert res.matched is True
 
-    def test_extra_context_available_in_condition(self):
+    @pytest.mark.asyncio
+    async def test_extra_context_available_in_condition(self):
         engine = RuleEngine()
         rules = [_rule(condition="value > rated_capacity * 0.8", action_tier="A")]
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=9.0), rules, context={"rated_capacity": 10.0}
         )
         assert result.matched is True
 
-    def test_broken_condition_is_skipped(self):
+    @pytest.mark.asyncio
+    async def test_broken_condition_is_skipped(self):
         """Conditions that raise at eval time are logged and skipped, not raised."""
         engine = RuleEngine()
         rules = [
             _rule(name="broken", condition="undefined_var > 5", action_tier="A"),
             _rule(name="ok", condition="value > 0", action_tier="A"),
         ]
-        result = engine.evaluate(_event(value=1.0), rules)
+        result = await engine.evaluate(_event(value=1.0), rules)
         assert result.matched is True
         assert result.rule_name == "ok"
 
@@ -188,29 +204,33 @@ class TestEvaluate:
 
 
 class TestActionTiers:
-    def test_tier_a_rule(self):
+    @pytest.mark.asyncio
+    async def test_tier_a_rule(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0), [_rule(condition="value > 10.0", action_tier="A")]
         )
         assert result.action_tier == "A"
 
-    def test_tier_b_rule(self):
+    @pytest.mark.asyncio
+    async def test_tier_b_rule(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0), [_rule(condition="value > 10.0", action_tier="B")]
         )
         assert result.action_tier == "B"
 
-    def test_tier_c_rule(self):
+    @pytest.mark.asyncio
+    async def test_tier_c_rule(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0), [_rule(condition="value > 10.0", action_tier="C")]
         )
         assert result.action_tier == "C"
         assert result.matched is True
 
-    def test_tier_d_bypass_llm_returns_immediately(self):
+    @pytest.mark.asyncio
+    async def test_tier_d_bypass_llm_returns_immediately(self):
         """Tier D with bypass_llm=True fires before other rules are evaluated."""
         engine = RuleEngine()
         rules = [
@@ -222,13 +242,14 @@ class TestActionTiers:
             ),
             _rule(name="should_not_reach", condition="value > 5.0", action_tier="A"),
         ]
-        result = engine.evaluate(_event(value=10.0), rules)
+        result = await engine.evaluate(_event(value=10.0), rules)
         assert result.matched is True
         assert result.action_tier == "D"
         assert result.bypass_llm is True
         assert result.rule_name == "dangerous_overcurrent"
 
-    def test_tier_d_not_matched_continues_to_next_rule(self):
+    @pytest.mark.asyncio
+    async def test_tier_d_not_matched_continues_to_next_rule(self):
         """If the Tier D condition is false, evaluation continues normally."""
         engine = RuleEngine()
         rules = [
@@ -240,13 +261,14 @@ class TestActionTiers:
             ),
             _rule(name="medium", condition="value > 5.0", action_tier="B"),
         ]
-        result = engine.evaluate(_event(value=10.0), rules)
+        result = await engine.evaluate(_event(value=10.0), rules)
         assert result.action_tier == "B"
         assert result.rule_name == "medium"
 
-    def test_bypass_llm_propagated_in_result(self):
+    @pytest.mark.asyncio
+    async def test_bypass_llm_propagated_in_result(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0),
             [_rule(condition="value > 10.0", bypass_llm=True, action_tier="D")],
         )
@@ -270,16 +292,19 @@ class TestSafetyChecks:
             "subprocess.run(['ls'])",
         ],
     )
-    def test_unsafe_condition_raises(self, condition: str):
+    @pytest.mark.asyncio
+    async def test_unsafe_condition_raises(self, condition: str):
         engine = RuleEngine()
         with pytest.raises(RuleEngineSafetyError):
-            engine.evaluate(_event(), [_rule(condition=condition)])
+            await engine.evaluate(_event(), [_rule(condition=condition)])
 
-    def test_safe_condition_does_not_raise(self):
+    @pytest.mark.asyncio
+    async def test_safe_condition_does_not_raise(self):
         engine = RuleEngine()
-        engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
 
-    def test_safety_check_runs_before_any_evaluation(self):
+    @pytest.mark.asyncio
+    async def test_safety_check_runs_before_any_evaluation(self):
         """Even if the first rule is safe, an unsafe later rule still raises."""
         engine = RuleEngine()
         rules = [
@@ -287,57 +312,63 @@ class TestSafetyChecks:
             _rule(name="unsafe", condition="__import__('os')", action_tier="A"),
         ]
         with pytest.raises(RuleEngineSafetyError):
-            engine.evaluate(_event(value=15.0), rules)
+            await engine.evaluate(_event(value=15.0), rules)
 
-    def test_builtins_not_available_in_condition(self):
+    @pytest.mark.asyncio
+    async def test_builtins_not_available_in_condition(self):
         """Built-in functions like len() are rejected by AST validation."""
         engine = RuleEngine()
         rules = [_rule(name="r", condition="len([1,2,3]) > 0", action_tier="A")]
         with pytest.raises(RuleEngineSafetyError):
-            engine.evaluate(_event(), rules)
+            await engine.evaluate(_event(), rules)
 
 
 # ─── Cooldown ─────────────────────────────────────────────────────────────────
 
 
 class TestCooldown:
-    def test_rule_fires_on_first_match(self):
+    @pytest.mark.asyncio
+    async def test_rule_fires_on_first_match(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0),
             [_rule(condition="value > 10.0", cooldown_seconds=60)],
         )
         assert result.matched is True
 
-    def test_rule_suppressed_within_cooldown(self):
+    @pytest.mark.asyncio
+    async def test_rule_suppressed_within_cooldown(self):
         engine = RuleEngine()
         rules = [_rule(condition="value > 10.0", cooldown_seconds=60)]
-        engine.evaluate(_event(value=15.0), rules)
-        result = engine.evaluate(_event(value=15.0), rules)
+        await engine.evaluate(_event(value=15.0), rules)
+        result = await engine.evaluate(_event(value=15.0), rules)
         assert result.matched is False
 
-    def test_rule_fires_again_after_cooldown_expires(self):
+    @pytest.mark.asyncio
+    async def test_rule_fires_again_after_cooldown_expires(self):
         engine = RuleEngine()
         rules = [_rule(name="r", condition="value > 10.0", cooldown_seconds=5)]
         now = _ms()
 
         with patch("ori.reasoning.rule_engine._now_ms", return_value=now):
-            engine.evaluate(_event(value=15.0), rules)
+            await engine.evaluate(_event(value=15.0), rules)
 
         # 6 seconds later — cooldown expired
         with patch("ori.reasoning.rule_engine._now_ms", return_value=now + 6_000):
-            result = engine.evaluate(_event(value=15.0), rules)
+            result = await engine.evaluate(_event(value=15.0), rules)
 
         assert result.matched is True
 
-    def test_zero_cooldown_always_fires(self):
+    @pytest.mark.asyncio
+    async def test_zero_cooldown_always_fires(self):
         engine = RuleEngine()
         rules = [_rule(condition="value > 10.0", cooldown_seconds=0)]
-        engine.evaluate(_event(value=15.0), rules)
-        result = engine.evaluate(_event(value=15.0), rules)
+        await engine.evaluate(_event(value=15.0), rules)
+        result = await engine.evaluate(_event(value=15.0), rules)
         assert result.matched is True
 
-    def test_cooldown_is_per_rule_name(self):
+    @pytest.mark.asyncio
+    async def test_cooldown_is_per_rule_name(self):
         """Two rules with different names have independent cooldowns."""
         engine = RuleEngine()
         rules = [
@@ -354,9 +385,9 @@ class TestCooldown:
                 action_tier="B",
             ),
         ]
-        engine.evaluate(_event(value=15.0), rules)
+        await engine.evaluate(_event(value=15.0), rules)
         # r1 is on cooldown → falls through to r2
-        result = engine.evaluate(_event(value=15.0), rules)
+        result = await engine.evaluate(_event(value=15.0), rules)
         assert result.matched is True
         assert result.rule_name == "r2"
 
@@ -384,7 +415,8 @@ class TestEvalContext:
         ctx = EvalContext({})
         assert ctx.last_n("any_sensor", 5) == []
 
-    def test_event_without_reading(self):
+    @pytest.mark.asyncio
+    async def test_event_without_reading(self):
         """Events with no reading still evaluate correctly with provided context."""
         engine = RuleEngine()
         event = OriEvent(
@@ -396,7 +428,7 @@ class TestEvalContext:
             reading=None,
         )
         rules = [_rule(name="r", condition="uptime_seconds > 3600", action_tier="A")]
-        result = engine.evaluate(event, rules, context={"uptime_seconds": 7200})
+        result = await engine.evaluate(event, rules, context={"uptime_seconds": 7200})
         assert result.matched is True
 
 
@@ -449,17 +481,19 @@ class TestEvaluateRejectsInvalidSensorValue:
         )
         return OriEvent.from_reading(reading, "dev-01")
 
-    def test_nan_value_raises_before_eval(self):
+    @pytest.mark.asyncio
+    async def test_nan_value_raises_before_eval(self):
         engine = RuleEngine()
         rules = [_rule(name="r", condition="value > 5.0")]
         with pytest.raises(RuleEngineSafetyError, match="NaN"):
-            engine.evaluate(self._event_with_value(float("nan")), rules)
+            await engine.evaluate(self._event_with_value(float("nan")), rules)
 
-    def test_inf_value_raises_before_eval(self):
+    @pytest.mark.asyncio
+    async def test_inf_value_raises_before_eval(self):
         engine = RuleEngine()
         rules = [_rule(name="r", condition="value > 5.0")]
         with pytest.raises(RuleEngineSafetyError, match="Inf"):
-            engine.evaluate(self._event_with_value(float("inf")), rules)
+            await engine.evaluate(self._event_with_value(float("inf")), rules)
 
 
 # ─── AST safety validation — direct unit tests ────────────────────────────────
@@ -735,7 +769,8 @@ class TestCheckSafetyAstRejections:
 class TestAstValidationIntegration:
     """End-to-end tests proving AST validation fires inside RuleEngine.evaluate()."""
 
-    def test_all_existing_unsafe_conditions_still_rejected(self):
+    @pytest.mark.asyncio
+    async def test_all_existing_unsafe_conditions_still_rejected(self):
         """Regression: the 8 original unsafe patterns from Phase 1 still fail."""
         engine = RuleEngine()
         conditions = [
@@ -750,26 +785,29 @@ class TestAstValidationIntegration:
         ]
         for condition in conditions:
             with pytest.raises(RuleEngineSafetyError):
-                engine.evaluate(_event(), [_rule(condition=condition)])
+                await engine.evaluate(_event(), [_rule(condition=condition)])
 
-    def test_safe_condition_evaluates_normally(self):
+    @pytest.mark.asyncio
+    async def test_safe_condition_evaluates_normally(self):
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0), [_rule(condition="value > 10.0")]
         )
         assert result.matched is True
 
-    def test_history_call_passes_ast_and_evaluates(self):
+    @pytest.mark.asyncio
+    async def test_history_call_passes_ast_and_evaluates(self):
         """history.avg_24h() passes AST and evaluates (returns 0.0 without store)."""
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=15.0),
             [_rule(condition="value > (history.avg_24h('load_current') * 1.4)")],
         )
         # avg_24h returns 0.0 without store, so 15.0 > 0.0 → matched
         assert result.matched is True
 
-    def test_unsafe_rule_in_batch_rejects_entire_batch(self):
+    @pytest.mark.asyncio
+    async def test_unsafe_rule_in_batch_rejects_entire_batch(self):
         """Even one unsafe rule in the list rejects everything before eval."""
         engine = RuleEngine()
         rules = [
@@ -777,32 +815,35 @@ class TestAstValidationIntegration:
             _rule(name="evil", condition="().__class__"),
         ]
         with pytest.raises(RuleEngineSafetyError):
-            engine.evaluate(_event(value=15.0), rules)
+            await engine.evaluate(_event(value=15.0), rules)
 
-    def test_broken_condition_still_skipped_after_ast(self):
+    @pytest.mark.asyncio
+    async def test_broken_condition_still_skipped_after_ast(self):
         """Conditions with undefined variables pass AST but fail at eval — skipped."""
         engine = RuleEngine()
         rules = [
             _rule(name="broken", condition="undefined_var > 5", action_tier="A"),
             _rule(name="ok", condition="value > 0", action_tier="A"),
         ]
-        result = engine.evaluate(_event(value=1.0), rules)
+        result = await engine.evaluate(_event(value=1.0), rules)
         assert result.matched is True
         assert result.rule_name == "ok"
 
-    def test_compound_condition_from_pc_skill(self):
+    @pytest.mark.asyncio
+    async def test_compound_condition_from_pc_skill(self):
         """Real condition from pc-system-health: cpu_temp > 90 and cpu_temp_quality > 0."""
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=95.0),
             [_rule(condition="value > 90 and quality > 0")],
         )
         assert result.matched is True
 
-    def test_arithmetic_condition_from_energy_skill(self):
+    @pytest.mark.asyncio
+    async def test_arithmetic_condition_from_energy_skill(self):
         """Real condition from energy-anomaly-detector: load_current > rated_capacity * 5.0."""
         engine = RuleEngine()
-        result = engine.evaluate(
+        result = await engine.evaluate(
             _event(value=55.0),
             [_rule(condition="value > rated_capacity * 5.0")],
             context={"rated_capacity": 10.0},
