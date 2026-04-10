@@ -98,7 +98,7 @@ For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the
 | Modbus RTU (RS485)   | ✅     | Industrial energy meters, PLCs, motor drives                            |
 | psutil               | ✅     | PC and server health monitoring (any laptop)                            |
 | MQTT                 | ✅     | WiFi-connected sensors/devices via an MQTT broker (commonly Mosquitto). |
-| OPC-UA               | 🗓️     | Industrial PLCs (IEC 62541)                                             |
+| OPC-UA               | ✅     | Industrial PLCs (IEC 62541)                                             |
 | SolarmanV5 (Growatt) | ✅     | Smart inverter integration                                              |
 | Zigbee / LoRaWAN     | 🗓️     | Smart home and rural long-range sensors                                 |
 
