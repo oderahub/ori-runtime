@@ -364,6 +364,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "usb_serial"
 
+    def test_accepts_http_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: outdoor-temp\n    type: temperature\n    protocol: http\n    poll_interval_ms: 10000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "http"
+
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
 
