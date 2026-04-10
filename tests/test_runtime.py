@@ -131,7 +131,7 @@ class TestAdapterProtocol:
                 sensors:
                   - id: inv-current
                     type: current
-                    protocol: growatt
+                    protocol: unknown_proto
                     poll_interval_ms: 1000
                 skills: []
                 reasoning:
@@ -161,7 +161,7 @@ class TestAdapterProtocol:
             await asyncio.sleep(0.5)
             await runtime.stop()
 
-        with pytest.raises(ConfigValidationError, match="growatt"):
+        with pytest.raises(ConfigValidationError, match="unknown_proto"):
             await asyncio.gather(runtime.start(), _stop())
 
 
