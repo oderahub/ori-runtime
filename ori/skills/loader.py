@@ -238,6 +238,8 @@ class SkillLoader:
         triggers = self._parse_triggers(
             raw.get("triggers") or [], raw.get("name", "<unknown>")
         )
+        actions = raw.get("actions") or {}
+        self._validate_actions(actions, raw.get("name", "<unknown>"))
         hooks = self._load_hooks(skill_dir)
 
         return Skill(
@@ -290,6 +292,32 @@ class SkillLoader:
                 )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _validate_actions(self, actions_dict: dict, skill_name: str) -> None:
+        """Enforce Explicit Capability validation for skill actions.
+
+        Every action referenced in ``actions.defaults`` must be explicitly
+        declared in ``actions.available`` with an appropriate tier.
+        """
+        available = actions_dict.get("available") or []
+        defaults = actions_dict.get("defaults") or {}
+
+        available_names = {
+            a.get("name") for a in available if isinstance(a, dict) and "name" in a
+        }
+
+        for trigger_name, default_action_list in defaults.items():
+            if not isinstance(default_action_list, list):
+                raise SkillValidationError(
+                    f"Skill {skill_name!r}: actions.defaults.{trigger_name} must be a list"
+                )
+            for action_name in default_action_list:
+                if action_name not in available_names:
+                    raise SkillValidationError(
+                        f"Skill {skill_name!r}: trigger {trigger_name!r} defaults to "
+                        f"undeclared action {action_name!r}. All actions must be explicitly "
+                        f"declared in actions.available."
+                    )
 
     def _parse_triggers(
         self, raw_triggers: list[dict], skill_name: str
@@ -389,12 +417,13 @@ class SkillLoader:
         # A skill is bundled if its path is relative to the project root
         # (i.e., not under the user's home directory).
         import os
+
         home = Path(os.path.expanduser("~")).resolve()
         try:
             skill_dir.resolve().relative_to(home / ".ori" / "skills")
             return False  # Under ~/.ori/skills/ — community skill
         except ValueError:
-            return True   # Not under user home — bundled skill
+            return True  # Not under user home — bundled skill
 
     def _load_hooks_direct(self, hooks_path: Path) -> Any:
         # Used for core team reviewed bundled skills only.
@@ -416,19 +445,20 @@ class SkillLoader:
     def _load_hooks_sandboxed(self, hooks_path: Path) -> Any:
         # Used for all community skills installed from the Skills Hub.
         from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
+
         try:
             module = load_hooks_restricted(str(hooks_path))
             if module is None:
                 return None
             logger.info(
-                "SkillLoader: loaded sandboxed hooks for %s",
-                hooks_path.parent.name
+                "SkillLoader: loaded sandboxed hooks for %s", hooks_path.parent.name
             )
             return module
         except SkillSecurityError as exc:
             logger.error(
                 "SkillLoader: security violation in %s hooks.py: %s",
-                hooks_path.parent.name, exc
+                hooks_path.parent.name,
+                exc,
             )
             return None  # Skill loads but hooks are disabled — safer than refusing entirely
 

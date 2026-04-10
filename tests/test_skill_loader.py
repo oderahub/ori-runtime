@@ -48,6 +48,9 @@ def _minimal_yaml(
             cooldown_seconds: 10
             action_tier: {action_tier}{bypass_line}{safe_line}
         actions:
+          available:
+            - name: alert_whatsapp
+              tier: A
           defaults:
             over_threshold: [alert_whatsapp]
     """
