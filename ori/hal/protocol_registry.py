@@ -6,7 +6,7 @@
 from ori.hal.base import BaseAdapter
 
 SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
-    {"psutil", "i2c", "serial", "growatt", "usb_serial"}
+    {"psutil", "i2c", "serial", "growatt", "usb_serial", "http"}
 )
 
 
@@ -36,6 +36,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.usb_serial_adapter import UsbSerialAdapter
 
         return UsbSerialAdapter()
+    if protocol == "http":
+        from ori.hal.http_adapter import HttpAdapter
+
+        return HttpAdapter()
 
     raise UnknownProtocolError(
         f"Unknown sensor protocol '{protocol}'. "
