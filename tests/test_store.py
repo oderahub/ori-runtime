@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import sqlite3
 import time
 
 import pytest
@@ -99,6 +100,27 @@ class TestLifecycle:
         s2 = StateStore(db_path=path)
         await s2.open()
         await s2.close()
+
+
+class TestMigrationHardening:
+    def test_add_column_if_missing_ignores_duplicate_column_error(self):
+        class _Conn:
+            def execute(self, _sql):
+                raise sqlite3.OperationalError("duplicate column name: device_id")
+
+        s = StateStore(db_path=":memory:")
+        s._conn = _Conn()  # type: ignore[assignment]
+        s._add_column_if_missing("reasoning_log", "device_id", "TEXT")
+
+    def test_add_column_if_missing_raises_non_duplicate_operational_error(self):
+        class _Conn:
+            def execute(self, _sql):
+                raise sqlite3.OperationalError("database disk image is malformed")
+
+        s = StateStore(db_path=":memory:")
+        s._conn = _Conn()  # type: ignore[assignment]
+        with pytest.raises(sqlite3.OperationalError, match="malformed"):
+            s._add_column_if_missing("reasoning_log", "device_id", "TEXT")
 
 
 # ─── append_history / get_history ─────────────────────────────────────────────

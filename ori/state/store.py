@@ -166,7 +166,7 @@ class StateStore:
         self._conn.executescript(_DDL)
         # Add columns that may be missing from databases created before this
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
-        # so we catch the OperationalError raised when the column already exists.
+        # so duplicate-column errors are handled explicitly.
         _new_reasoning_cols = [
             ("device_id", "TEXT    NOT NULL DEFAULT ''"),
             ("model", "TEXT    NOT NULL DEFAULT ''"),
@@ -175,13 +175,18 @@ class StateStore:
             ("proposed_action", "TEXT"),
         ]
         for col, typedef in _new_reasoning_cols:
-            try:
-                self._conn.execute(
-                    f"ALTER TABLE reasoning_log ADD COLUMN {col} {typedef}"
-                )
-            except Exception:
-                pass  # column already exists
+            self._add_column_if_missing("reasoning_log", col, typedef)
         self._conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str, typedef: str) -> None:
+        assert self._conn is not None
+        try:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "duplicate column name" in msg:
+                return
+            raise
 
     async def _run(self, fn, *args):
         """Run a synchronous callable in the executor, serialised by lock."""
