@@ -317,16 +317,36 @@ class IntelligenceElevator:
             dispatcher: :class:`~ori.reasoning.action_dispatcher.ActionDispatcher`.
         """
         try:
+            handler_trigger_name = ""
+            if isinstance(getattr(event, "context", None), dict):
+                handler_trigger_name = str(
+                    event.context.get("__handler_trigger_name") or ""
+                )
+
+            pre_rule_result = None
+            if handler_trigger_name:
+                pre_rule_result, _ = await self._evaluate_rules_with_hooks(
+                    event, skill, state_store
+                )
+                if not pre_rule_result.matched:
+                    return
+                if pre_rule_result.rule_name != handler_trigger_name:
+                    return
+
             result = await self.reason(event, skill, state_store)
+
+            rule_res, _ = (
+                (pre_rule_result, None)
+                if pre_rule_result is not None
+                else await self._evaluate_rules_with_hooks(event, skill, state_store)
+            )
 
             if hasattr(skill, "hooks") and hasattr(skill.hooks, "post_reasoning"):
                 from ori.skills.hooks_api import HookContext
 
-                # Rule matching trigger identification is useful for post_reasoning
-                # even if tier was local_slm.
-                rule_res, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
-
-                pt_ctx = HookContext.build(event, state_store, getattr(skill, "name", "unknown"))
+                pt_ctx = HookContext.build(
+                    event, state_store, getattr(skill, "name", "unknown")
+                )
                 pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""
 
                 try:
@@ -334,15 +354,34 @@ class IntelligenceElevator:
                 except Exception:
                     logger.exception(
                         "IntelligenceElevator: post_reasoning hook failed for %r",
-                        getattr(skill, "name", "unknown")
+                        getattr(skill, "name", "unknown"),
                     )
 
-            sensor_type = (
-                event.reading.sensor_type if event.reading else event.event_type
-            )
             actions: list[str] = []
-            if hasattr(skill, "get_default_actions"):
-                actions = skill.get_default_actions(sensor_type)
+            if rule_res.matched and rule_res.rule_name:
+                if hasattr(skill, "get_default_actions_for_trigger"):
+                    actions = skill.get_default_actions_for_trigger(rule_res.rule_name)
+                elif hasattr(skill, "actions") and isinstance(skill.actions, dict):
+                    defaults = skill.actions.get("defaults") or {}
+                    if isinstance(defaults, dict):
+                        maybe_actions = defaults.get(rule_res.rule_name, [])
+                        if isinstance(maybe_actions, list):
+                            actions = maybe_actions
+            elif result.proposed_action:
+                proposed = result.proposed_action
+                if hasattr(skill, "is_action_declared"):
+                    if skill.is_action_declared(proposed):
+                        actions = [proposed]
+                elif (
+                    hasattr(skill, "actions")
+                    and isinstance(skill.actions, dict)
+                    and isinstance(skill.actions.get("available"), list)
+                ):
+                    available = skill.actions.get("available") or []
+                    for entry in available:
+                        if isinstance(entry, dict) and entry.get("name") == proposed:
+                            actions = [proposed]
+                            break
 
             context = SkillContext(skill=skill, event=event, state_store=state_store)
             for action in actions:

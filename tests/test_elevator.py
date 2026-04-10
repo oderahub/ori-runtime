@@ -46,9 +46,27 @@ class FakeSkill:
     config: dict = field(default_factory=dict)
     prompts: dict = field(default_factory=dict)
     _actions: dict = field(default_factory=dict)
+    actions: dict = field(default_factory=dict)
 
     def get_default_actions(self, sensor_type: str) -> list[str]:
         return self._actions.get(sensor_type, [])
+
+    def get_default_actions_for_trigger(self, trigger_name: str) -> list[str]:
+        defaults = self.actions.get("defaults", {})
+        if isinstance(defaults, dict):
+            maybe = defaults.get(trigger_name, [])
+            if isinstance(maybe, list):
+                return maybe
+        return self._actions.get(trigger_name, [])
+
+    def is_action_declared(self, action_name: str) -> bool:
+        available = self.actions.get("available", [])
+        for entry in available:
+            if isinstance(entry, dict) and entry.get("name") == action_name:
+                return True
+            if isinstance(entry, str) and entry == action_name:
+                return True
+        return False
 
 
 def _tier_d_skill() -> FakeSkill:
@@ -76,7 +94,10 @@ def _tier_a_skill() -> FakeSkill:
                 "cooldown_seconds": 0,
             }
         ],
-        _actions={"current_clamp": ["alert_whatsapp"]},
+        actions={
+            "available": [{"name": "alert_whatsapp", "tier": "A"}],
+            "defaults": {"anomalous_draw": ["alert_whatsapp"]},
+        },
     )
 
 
@@ -299,7 +320,10 @@ class TestReasonAndDispatch:
         """The tier passed to dispatcher comes from ReasoningResult, not hardcoded."""
         mock_dispatcher = AsyncMock()
         skill = _tier_d_skill()
-        skill._actions = {"current_clamp": ["emergency_cutoff"]}
+        skill.actions = {
+            "available": [{"name": "emergency_cutoff", "tier": "D"}],
+            "defaults": {"dangerous_overcurrent": ["emergency_cutoff"]},
+        }
         elevator = IntelligenceElevator()
 
         await elevator.reason_and_dispatch(
@@ -355,6 +379,73 @@ class TestReasonAndDispatch:
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
             await elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
+
+        mock_dispatcher.dispatch.assert_not_called()
+
+    async def test_actions_selected_by_matched_trigger_not_sensor_type(self):
+        mock_dispatcher = AsyncMock()
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "minor",
+                    "condition": "value > 100.0",
+                    "action_tier": "A",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                },
+                {
+                    "name": "major",
+                    "condition": "value > 7.0",
+                    "action_tier": "A",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                },
+            ],
+            actions={
+                "available": [
+                    {"name": "alert_whatsapp", "tier": "A"},
+                    {"name": "log_to_dashboard", "tier": "A"},
+                ],
+                "defaults": {
+                    "minor": ["alert_whatsapp"],
+                    "major": ["log_to_dashboard"],
+                },
+            },
+        )
+        elevator = IntelligenceElevator()
+        event = _event(value=8.0)
+        # Ensure "major" is the matched rule for this event.
+        event.context = {"__handler_trigger_name": "major"}
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["action"] == "log_to_dashboard"
+
+    async def test_no_rule_match_dispatches_nothing(self):
+        mock_dispatcher = AsyncMock()
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "never",
+                    "condition": "value > 100.0",
+                    "action_tier": "A",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ],
+            actions={
+                "available": [{"name": "alert_whatsapp", "tier": "A"}],
+                "defaults": {"never": ["alert_whatsapp"]},
+            },
+        )
+        elevator = IntelligenceElevator()
+        event = _event(value=5.0)
+        event.context = {"__handler_trigger_name": "never"}
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
 
         mock_dispatcher.dispatch.assert_not_called()
 

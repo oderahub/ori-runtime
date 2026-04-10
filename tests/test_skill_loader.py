@@ -304,6 +304,54 @@ class TestValidation:
         assert skill.triggers[0].action_tier == "C"
         assert skill.triggers[0].safe_default_action == "log_to_dashboard"
 
+    def test_missing_defaults_mapping_for_trigger_raises(self, tmp_path):
+        yaml_content = """\
+            name: bad-defaults
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: t1
+                condition: "value > 5"
+                action_tier: A
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults: {}
+        """
+        skill_dir = tmp_path / "bad-defaults"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="missing actions.defaults mapping"):
+            loader.load_one(skill_dir)
+
+    def test_extra_defaults_key_without_trigger_raises(self, tmp_path):
+        yaml_content = """\
+            name: bad-defaults
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: t1
+                condition: "value > 5"
+                action_tier: A
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                t1: [alert_whatsapp]
+                t2: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "bad-defaults"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="unknown trigger"):
+            loader.load_one(skill_dir)
+
 
 # ─── SkillLoader.load_all ────────────────────────────────────────────────────
 

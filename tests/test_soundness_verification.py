@@ -154,10 +154,12 @@ async def test_loader_capability_validation():
     }
 
     with pytest.raises(SkillValidationError, match="undeclared action 'alert_sms'"):
-        loader._validate_actions(invalid_actions, "bad-skill")
+        loader._validate_actions(
+            invalid_actions, "bad-skill", trigger_names=["over_threshold"]
+        )
 
     valid_actions = {
         "available": [{"name": "alert_whatsapp", "tier": "A"}],
         "defaults": {"over_threshold": ["alert_whatsapp"]}
     }
-    loader._validate_actions(valid_actions, "good-skill")
+    loader._validate_actions(valid_actions, "good-skill", trigger_names=["over_threshold"])

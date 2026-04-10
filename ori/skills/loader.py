@@ -20,7 +20,7 @@ import asyncio
 import importlib.util
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +96,14 @@ class Skill:
     config: dict = field(default_factory=dict)
     hooks: Any = None  # loaded module or None
 
+    def get_default_actions_for_trigger(self, trigger_name: str) -> list[str]:
+        """Return default actions for an exact trigger name."""
+        defaults: dict[str, list[str]] = self.actions.get("defaults") or {}
+        actions = defaults.get(trigger_name, [])
+        if isinstance(actions, list):
+            return list(actions)
+        return []
+
     def get_default_actions(self, sensor_type: str) -> list[str]:
         """Return the list of default action names for *sensor_type*.
 
@@ -119,6 +127,16 @@ class Skill:
                 if actions:
                     return actions
         return []
+
+    def is_action_declared(self, action_name: str) -> bool:
+        """Return True if *action_name* is declared in actions.available."""
+        available = self.actions.get("available") or []
+        for entry in available:
+            if isinstance(entry, dict) and entry.get("name") == action_name:
+                return True
+            if isinstance(entry, str) and entry == action_name:
+                return True
+        return False
 
 
 # ── Cooldown tracker ─────────────────────────────────────────────────────────
@@ -192,6 +210,9 @@ class SkillLoader:
         for child in sorted(root.iterdir()):
             if not child.is_dir():
                 continue
+            # Template scaffolds are documentation assets, not runtime skills.
+            if child.name == "template":
+                continue
             yaml_path = child / "skill.yaml"
             if not yaml_path.exists():
                 continue
@@ -234,12 +255,22 @@ class SkillLoader:
         skill_dir = Path(skill_dir)
         yaml_path = skill_dir / "skill.yaml"
         raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(raw, dict):
+            raise SkillValidationError(
+                f"Skill {skill_dir.name!r}: skill.yaml must be a mapping"
+            )
+
+        self._validate_skill_metadata(raw, skill_dir.name)
 
         triggers = self._parse_triggers(
             raw.get("triggers") or [], raw.get("name", "<unknown>")
         )
         actions = raw.get("actions") or {}
-        self._validate_actions(actions, raw.get("name", "<unknown>"))
+        self._validate_actions(
+            actions,
+            raw.get("name", "<unknown>"),
+            trigger_names=[t.name for t in triggers],
+        )
         hooks = self._load_hooks(skill_dir)
 
         return Skill(
@@ -253,6 +284,30 @@ class SkillLoader:
             config=raw.get("config") or {},
             hooks=hooks,
         )
+
+    def _validate_skill_metadata(self, raw: dict[str, Any], skill_dir_name: str) -> None:
+        """Validate core metadata presence for runtime-loadable skills."""
+        name = str(raw.get("name") or "").strip()
+        version = str(raw.get("version") or "").strip()
+        author = str(raw.get("author") or "").strip()
+        triggers = raw.get("triggers")
+
+        if not name:
+            raise SkillValidationError(
+                f"Skill directory {skill_dir_name!r}: missing required field 'name'"
+            )
+        if not version:
+            raise SkillValidationError(
+                f"Skill {name!r}: missing required field 'version'"
+            )
+        if not author:
+            raise SkillValidationError(
+                f"Skill {name!r}: missing required field 'author'"
+            )
+        if not isinstance(triggers, list) or len(triggers) == 0:
+            raise SkillValidationError(
+                f"Skill {name!r}: triggers must be a non-empty list"
+            )
 
     def register(self, skill: Skill, event_bus: Any) -> None:
         """Wire EventBus handlers for every trigger in *skill*.
@@ -293,7 +348,9 @@ class SkillLoader:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _validate_actions(self, actions_dict: dict, skill_name: str) -> None:
+    def _validate_actions(
+        self, actions_dict: dict, skill_name: str, trigger_names: list[str]
+    ) -> None:
         """Enforce Explicit Capability validation for skill actions.
 
         Every action referenced in ``actions.defaults`` must be explicitly
@@ -301,15 +358,41 @@ class SkillLoader:
         """
         available = actions_dict.get("available") or []
         defaults = actions_dict.get("defaults") or {}
+        trigger_name_set = set(trigger_names)
+
+        if not isinstance(defaults, dict):
+            raise SkillValidationError(
+                f"Skill {skill_name!r}: actions.defaults must be a mapping of "
+                "trigger_name -> [action_names]"
+            )
 
         available_names = {
             a.get("name") for a in available if isinstance(a, dict) and "name" in a
         }
 
+        extra_defaults = sorted(set(defaults.keys()) - trigger_name_set)
+        if extra_defaults:
+            raise SkillValidationError(
+                f"Skill {skill_name!r}: actions.defaults contains unknown trigger(s): "
+                f"{extra_defaults}. Each defaults key must map to a declared trigger."
+            )
+
+        missing_defaults = sorted(trigger_name_set - set(defaults.keys()))
+        if missing_defaults:
+            raise SkillValidationError(
+                f"Skill {skill_name!r}: missing actions.defaults mapping for trigger(s): "
+                f"{missing_defaults}. Every trigger must declare default actions."
+            )
+
         for trigger_name, default_action_list in defaults.items():
             if not isinstance(default_action_list, list):
                 raise SkillValidationError(
                     f"Skill {skill_name!r}: actions.defaults.{trigger_name} must be a list"
+                )
+            if not default_action_list:
+                raise SkillValidationError(
+                    f"Skill {skill_name!r}: actions.defaults.{trigger_name} must "
+                    "contain at least one action."
                 )
             for action_name in default_action_list:
                 if action_name not in available_names:
@@ -514,9 +597,16 @@ class SkillLoader:
             # CRITICAL: create_task returns immediately. LLM inference, network I/O,
             # and GPIO all happen inside the background task. This handler must not
             # block EventBus delivery to subsequent subscribers.
+            dispatch_event = replace(
+                event,
+                context={
+                    **(event.context or {}),
+                    "__handler_trigger_name": trigger.name,
+                },
+            )
             asyncio.create_task(
                 elevator.reason_and_dispatch(
-                    event=event,
+                    event=dispatch_event,
                     skill=skill,
                     state_store=state_store,
                     dispatcher=dispatcher,
