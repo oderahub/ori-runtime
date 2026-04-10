@@ -15,6 +15,7 @@ and returns a :class:`~ori.network.events.ReasoningResult`.
    point where control is yielded back to the event loop immediately.
 """
 
+import asyncio
 import datetime
 import logging
 import socket
@@ -57,8 +58,9 @@ def _hour_now() -> int:
 def _is_offline() -> bool:
     """Return ``True`` if no internet connectivity is detectable."""
     try:
-        socket.setdefaulttimeout(1)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("8.8.8.8", 53))
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.0)
+            sock.connect(("8.8.8.8", 53))
         return False
     except OSError:
         return True
@@ -205,6 +207,11 @@ class IntelligenceElevator:
             stub.proposed_action = rule_result.action
         return stub
 
+    async def _is_offline_async(self) -> bool:
+        """Run connectivity probe in a worker thread to avoid blocking the loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _is_offline)
+
     async def _evaluate_rules_with_hooks(self, event: OriEvent, skill: Any, state_store: Any):
         """Build context with derived hook variables, and evaluate against RuleEngine."""
         rules = getattr(skill, "triggers", [])
@@ -275,7 +282,7 @@ class IntelligenceElevator:
 
         complexity = _complexity_score(current_value, avg_24h, history, _hour_now())
 
-        offline = _is_offline()
+        offline = await self._is_offline_async()
         fallback = getattr(self._config, "offline_fallback", "rule") if self._config else "rule"
         threshold = getattr(self._config, "escalation_threshold", 0.70) if self._config else 0.70
 
