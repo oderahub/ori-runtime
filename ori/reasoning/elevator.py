@@ -168,7 +168,7 @@ class IntelligenceElevator:
         """
         tier = await self.select_tier(event, skill, state_store)
 
-        rule_result, hook_ctx = self._evaluate_rules_with_hooks(event, skill, state_store)
+        rule_result, hook_ctx = await self._evaluate_rules_with_hooks(event, skill, state_store)
 
         if tier == "rule":
             return ReasoningResult(
@@ -187,6 +187,9 @@ class IntelligenceElevator:
             try:
                 result = await self._local_llm.reason(prompt)
                 result.prompt = prompt
+                if rule_result.matched and result.action_tier != "D":
+                    result.action_tier = rule_result.action_tier
+                    result.proposed_action = result.proposed_action or rule_result.action
                 return result
             except Exception:
                 logger.exception(
@@ -196,9 +199,13 @@ class IntelligenceElevator:
                 )
 
         # Fallback stub — gateway/cloud tiers not yet wired
-        return self._stub_result(tier, event)
+        stub = self._stub_result(tier, event)
+        if rule_result.matched and stub.action_tier != "D":
+            stub.action_tier = rule_result.action_tier
+            stub.proposed_action = rule_result.action
+        return stub
 
-    def _evaluate_rules_with_hooks(self, event: OriEvent, skill: Any, state_store: Any):
+    async def _evaluate_rules_with_hooks(self, event: OriEvent, skill: Any, state_store: Any):
         """Build context with derived hook variables, and evaluate against RuleEngine."""
         rules = getattr(skill, "triggers", [])
         ctx: dict[str, Any] = {}
@@ -218,7 +225,7 @@ class IntelligenceElevator:
                     getattr(skill, "name", "unknown")
                 )
 
-        rule_result = self._rule_engine.evaluate(event, rules, context=ctx)
+        rule_result = await self._rule_engine.evaluate(event, rules, context=ctx, state_store=state_store)
         return rule_result, hook_ctx
 
     async def select_tier(
@@ -238,7 +245,7 @@ class IntelligenceElevator:
            internet available → ``'cloud'`` (future)
            fallback → ``'local_slm'``
         """
-        rule_result, _ = self._evaluate_rules_with_hooks(event, skill, state_store)
+        rule_result, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
 
         # Tier D is always handled by the rule engine — return immediately
         if rule_result.matched and rule_result.action_tier == "D":
@@ -317,7 +324,7 @@ class IntelligenceElevator:
 
                 # Rule matching trigger identification is useful for post_reasoning
                 # even if tier was local_slm.
-                rule_res, _ = self._evaluate_rules_with_hooks(event, skill, state_store)
+                rule_res, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
 
                 pt_ctx = HookContext.build(event, state_store, getattr(skill, "name", "unknown"))
                 pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""

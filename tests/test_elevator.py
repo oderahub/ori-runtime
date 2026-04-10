@@ -34,7 +34,9 @@ def _reading(
 
 
 def _event(value: float = 5.0, sensor_type: str = "current_clamp") -> OriEvent:
-    return OriEvent.from_reading(_reading(value=value, sensor_type=sensor_type), "dev-01")
+    return OriEvent.from_reading(
+        _reading(value=value, sensor_type=sensor_type), "dev-01"
+    )
 
 
 @dataclass
@@ -78,12 +80,12 @@ def _tier_a_skill() -> FakeSkill:
     )
 
 
-def _mock_state_store(avg: float | None = None, history: list | None = None) -> AsyncMock:
+def _mock_state_store(
+    avg: float | None = None, history: list | None = None
+) -> AsyncMock:
     store = AsyncMock()
     store.avg_last_hours.return_value = avg
-    store.get_history.return_value = [
-        _reading(v) for v in (history or [])
-    ]
+    store.get_history.return_value = [_reading(v) for v in (history or [])]
     store.log_reasoning = AsyncMock()
     return store
 
@@ -131,13 +133,15 @@ class TestSelectTier:
     async def test_bypass_llm_rule_returns_rule(self):
         elevator = IntelligenceElevator()
         skill = FakeSkill(
-            triggers=[{
-                "name": "r",
-                "condition": "value > 3.0",
-                "action_tier": "B",
-                "bypass_llm": True,
-                "cooldown_seconds": 0,
-            }]
+            triggers=[
+                {
+                    "name": "r",
+                    "condition": "value > 3.0",
+                    "action_tier": "B",
+                    "bypass_llm": True,
+                    "cooldown_seconds": 0,
+                }
+            ]
         )
         tier = await elevator.select_tier(_event(value=5.0), skill, None)
         assert tier == "rule"
@@ -283,7 +287,9 @@ class TestReasonAndDispatch:
         elevator = IntelligenceElevator()
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(_event(value=5.0), skill, None, mock_dispatcher)
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), skill, None, mock_dispatcher
+            )
 
         mock_dispatcher.dispatch.assert_called_once()
         call = mock_dispatcher.dispatch.call_args
@@ -296,7 +302,9 @@ class TestReasonAndDispatch:
         skill._actions = {"current_clamp": ["emergency_cutoff"]}
         elevator = IntelligenceElevator()
 
-        await elevator.reason_and_dispatch(_event(value=5.0), skill, None, mock_dispatcher)
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
 
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["tier"] == "D"
@@ -308,7 +316,9 @@ class TestReasonAndDispatch:
 
         with patch.object(elevator, "reason", side_effect=RuntimeError("boom")):
             # Must not raise
-            await elevator.reason_and_dispatch(_event(), FakeSkill(), None, mock_dispatcher)
+            await elevator.reason_and_dispatch(
+                _event(), FakeSkill(), None, mock_dispatcher
+            )
 
         mock_dispatcher.dispatch.assert_not_called()
 
@@ -320,7 +330,9 @@ class TestReasonAndDispatch:
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
             # Must not raise
-            await elevator.reason_and_dispatch(_event(value=5.0), skill, None, mock_dispatcher)
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), skill, None, mock_dispatcher
+            )
 
     async def test_reasoning_logged_when_store_has_log_reasoning(self):
         store = _mock_state_store()
@@ -353,7 +365,9 @@ class TestReasonAndDispatch:
         store = _mock_state_store()
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(_event(value=5.0), skill, store, mock_dispatcher)
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), skill, store, mock_dispatcher
+            )
 
         call = mock_dispatcher.dispatch.call_args
         ctx = call[1]["context"]
@@ -375,6 +389,7 @@ class TestReasonAndDispatch:
     async def test_reason_and_dispatch_catches_safety_error_and_dispatches_tier_a(self):
         """A RuleEngineSafetyError must be caught and routed as a Tier A synthetic event."""
         from ori.reasoning.rule_engine import RuleEngineSafetyError
+
         mock_dispatcher = AsyncMock()
         elevator = IntelligenceElevator()
         skill = FakeSkill()
@@ -382,7 +397,9 @@ class TestReasonAndDispatch:
         skill._actions = {}
         skill.actions = {"available": [{"name": "alert_sms", "tier": "A"}]}
 
-        with patch.object(elevator, "reason", side_effect=RuleEngineSafetyError("NaN in reading")):
+        with patch.object(
+            elevator, "reason", side_effect=RuleEngineSafetyError("NaN in reading")
+        ):
             await elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
 
         # It should dispatch Tier A fallback for whatsapp and sms
@@ -394,9 +411,12 @@ class TestReasonAndDispatch:
 
         for call in calls:
             assert call[1]["tier"] == "A"
-            assert "Sensor safety check failed: NaN in reading" in call[1]["result"].text
+            assert (
+                "Sensor safety check failed: NaN in reading" in call[1]["result"].text
+            )
             ctx = call[1]["context"]
             assert ctx.event.event_type == "sensor.invalid_value"
+
 
 # ─── SkillContext ─────────────────────────────────────────────────────────────
 
