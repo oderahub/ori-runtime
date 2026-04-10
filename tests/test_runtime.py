@@ -191,6 +191,56 @@ class TestLifecycle:
 
         await asyncio.gather(runtime.start(), _double_stop())
 
+    async def test_start_does_not_duplicate_rotating_file_handler(
+        self, minimal_config, monkeypatch
+    ):
+        """Restarting in-process should keep a single RotatingFileHandler per file."""
+        from logging.handlers import RotatingFileHandler
+
+        _patch_external(monkeypatch)
+        cfg_path = Path(minimal_config)
+        custom_log = cfg_path.parent / "runtime-test.log"
+        cfg_path.write_text(
+            cfg_path.read_text(encoding="utf-8")
+            + textwrap.dedent(
+                f"""
+                logging:
+                  file: "{custom_log}"
+                  level: INFO
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        runtime1 = OriRuntime(config_path=str(cfg_path))
+        runtime2 = OriRuntime(config_path=str(cfg_path))
+
+        async def _run_once(runtime: OriRuntime):
+            async def _stop():
+                await asyncio.sleep(0.1)
+                await runtime.stop()
+
+            await asyncio.gather(runtime.start(), _stop())
+
+        await _run_once(runtime1)
+        await _run_once(runtime2)
+
+        root = logging.getLogger()
+        target = str(custom_log.resolve())
+        matches = [
+            h
+            for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and Path(getattr(h, "baseFilename", "")).resolve().as_posix()
+            == Path(target).as_posix()
+        ]
+        assert len(matches) == 1
+
+        # Keep global logger state clean for subsequent tests.
+        for h in matches:
+            root.removeHandler(h)
+            h.close()
+
 
 class TestStartupLogs:
     async def test_startup_logs_skill_tiers(self, minimal_config, monkeypatch, caplog):

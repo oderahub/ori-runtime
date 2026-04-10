@@ -79,6 +79,22 @@ class OriRuntime:
         root_logger = logging.getLogger()
         root_logger.setLevel(getattr(logging, config.logging.level, logging.INFO))
 
+        # Prevent duplicate file handlers when start() is called multiple times.
+        target_log_file = os.path.abspath(config.logging.file)
+        for handler in list(root_logger.handlers):
+            if (
+                isinstance(handler, RotatingFileHandler)
+                and os.path.abspath(getattr(handler, "baseFilename", "")) == target_log_file
+            ):
+                root_logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    logger.debug(
+                        "[runtime] failed to close stale rotating handler: %r",
+                        handler,
+                    )
+
         file_handler = RotatingFileHandler(
             config.logging.file,
             maxBytes=config.logging.max_bytes,
