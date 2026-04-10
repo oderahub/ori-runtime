@@ -62,6 +62,15 @@ sensors:
   #   port: 8899
   #   poll_interval_ms: 5000
 
+  # ─── Victron inverter via VenusOS MQTT (optional) ──────────────────────────
+  # - id: victron-battery
+  #   type: victron_battery_soc
+  #   protocol: victron
+  #   broker_host: "192.168.1.50"
+  #   portal_id: "YOUR_PORTAL_ID"
+  #   port: 1883
+  #   poll_interval_ms: 5000
+
   # ─── PC/Mac system health (PC-Ori) ──────────────────────────────────────
   # Uncomment to monitor the host machine — no hardware required
   # - id: system-cpu
