@@ -51,6 +51,12 @@ jobs:
             tests/test_soundness_verification.py::test_tier_c_dispatch_upgrade \
             tests/test_soundness_verification.py::test_dispatcher_never_downgrades_tier
 
+      - name: Guard Skill Capability Invariants
+        run: |
+          pytest -v \
+            tests/test_skill_loader.py::TestValidation::test_missing_defaults_mapping_for_trigger_raises \
+            tests/test_skill_loader.py::TestValidation::test_extra_defaults_key_without_trigger_raises
+
       - name: Run tests with coverage
         run: |
           pytest tests/ -v \

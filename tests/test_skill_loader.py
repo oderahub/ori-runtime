@@ -304,6 +304,41 @@ class TestValidation:
         assert skill.triggers[0].action_tier == "C"
         assert skill.triggers[0].safe_default_action == "log_to_dashboard"
 
+    def test_missing_name_raises(self, tmp_path):
+        yaml_content = """\
+            version: 0.1.0
+            author: test
+            triggers:
+              - name: t1
+                condition: "value > 5"
+                action_tier: A
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                t1: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "bad-meta"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="missing required field 'name'"):
+            loader.load_one(skill_dir)
+
+    def test_empty_triggers_raises(self, tmp_path):
+        yaml_content = """\
+            name: bad
+            version: 0.1.0
+            author: test
+            triggers: []
+            actions: {}
+        """
+        skill_dir = tmp_path / "bad-meta"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="triggers must be a non-empty list"):
+            loader.load_one(skill_dir)
+
     def test_missing_defaults_mapping_for_trigger_raises(self, tmp_path):
         yaml_content = """\
             name: bad-defaults
@@ -400,6 +435,15 @@ class TestLoadAll:
         loader = SkillLoader()
         skills = loader.load_all(str(tmp_path))
         assert skills == []
+
+    def test_template_directory_is_skipped(self, tmp_path):
+        _write_skill_yaml(tmp_path / "template", _minimal_yaml(name="template"))
+        _write_skill_yaml(tmp_path / "real-skill", _minimal_yaml(name="real-skill"))
+        loader = SkillLoader()
+        skills = loader.load_all(str(tmp_path))
+        names = {s.name for s in skills}
+        assert "real-skill" in names
+        assert "template" not in names
 
 
 # ─── SkillLoader.register — EventBus handler ─────────────────────────────────
