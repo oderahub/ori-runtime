@@ -91,16 +91,16 @@ For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the
 
 ## Hardware Support
 
-| Protocol                | Status | Coverage                                     |
-| ----------------------- | ------ | -------------------------------------------- |
-| GPIO (Raspberry Pi)     | ✅     | Wired sensors and relay control              |
-| I2C / SPI               | ✅     | Precision sensors: BME280, ADS1115, SCD40    |
-| Modbus RTU (RS485)      | ✅     | Industrial energy meters, PLCs, motor drives |
-| psutil                  | ✅     | PC and server health monitoring (any laptop) |
-| MQTT                    | 🗓️     | WiFi-connected sensors via Mosquitto         |
-| OPC-UA                  | 🗓️     | Industrial PLCs (IEC 62541)                  |
-| SolarmanV5 (Growatt)    | 🗓️     | Smart inverter integration                   |
-| Zigbee / LoRaWAN        | 🗓️     | Smart home and rural long-range sensors      |
+| Protocol             | Status | Coverage                                     |
+| -------------------- | ------ | -------------------------------------------- |
+| GPIO (Raspberry Pi)  | ✅     | Wired sensors and relay control              |
+| I2C / SPI            | ✅     | Precision sensors: BME280, ADS1115, SCD40    |
+| Modbus RTU (RS485)   | ✅     | Industrial energy meters, PLCs, motor drives |
+| psutil               | ✅     | PC and server health monitoring (any laptop) |
+| MQTT                 | 🗓️     | WiFi-connected sensors via Mosquitto         |
+| OPC-UA               | 🗓️     | Industrial PLCs (IEC 62541)                  |
+| SolarmanV5 (Growatt) | ✅     | Smart inverter integration                   |
+| Zigbee / LoRaWAN     | 🗓️     | Smart home and rural long-range sensors      |
 
 ✅ = Implemented &nbsp;&nbsp; 🗓️ = Roadmap
 
@@ -262,12 +262,12 @@ The test suite covers all layers — HAL adapters, event bus, rule engine (with 
 
 ## Roadmap
 
-| Phase  | Status        | Milestone                                                                  |
-| ------ | ------------- | -------------------------------------------------------------------------- |
-| Core   | ✅ Complete   | Full runtime with 6-layer architecture, 4-tier action framework, 660+ tests |
-| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video.      |
-| Launch | 🗓️ Planned    | Skills Hub. CLI tooling. Phone-as-gateway deployment model.                |
-| Growth | 🗓️ Planned    | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.               |
+| Phase  | Status         | Milestone                                                                   |
+| ------ | -------------- | --------------------------------------------------------------------------- |
+| Core   | ✅ Complete    | Full runtime with 6-layer architecture, 4-tier action framework, 660+ tests |
+| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video.       |
+| Launch | 🗓️ Planned     | Skills Hub. CLI tooling. Phone-as-gateway deployment model.                 |
+| Growth | 🗓️ Planned     | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.                |
 
 ---
 
