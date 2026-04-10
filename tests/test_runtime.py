@@ -12,7 +12,7 @@ import logging
 import textwrap
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -393,6 +393,18 @@ class TestProcessTargetResolution:
         )
         assert _process_target_from_context(ctx) == (None, "")
 
+    def test_uses_recommended_process_when_present(self):
+        ctx = self._ctx(
+            metadata={
+                "processes": [
+                    {"pid": 1, "name": "A"},
+                    {"pid": 2, "name": "B"},
+                ],
+                "recommended_process": {"pid": 2, "name": "B"},
+            }
+        )
+        assert _process_target_from_context(ctx) == (2, "B")
+
 
 class TestWebhookIngest:
     async def test_ingest_sms_webhook_returns_false_without_sms_action(self):
@@ -407,3 +419,185 @@ class TestWebhookIngest:
         ok = await runtime.ingest_sms_webhook({"from": "+234", "text": "YES"})
         assert ok is True
         runtime._sms_action.ingest_incoming_webhook.assert_awaited_once()
+
+
+class TestWebhookServerStartup:
+    async def test_runtime_starts_sms_webhook_when_enabled(self, tmp_path, monkeypatch):
+        _patch_external(monkeypatch)
+
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            textwrap.dedent("""\
+                name: test-skill
+                version: 0.1.0
+                author: test
+                sensors_required:
+                  - type: cpu_percent
+                    protocol: psutil
+                triggers:
+                  - name: high_cpu
+                    condition: "value > 90"
+                    action_tier: A
+                    cooldown_seconds: 0
+                    escalate_to: local_slm
+                actions:
+                  available:
+                    - name: alert_whatsapp
+                      tier: A
+                  defaults:
+                    high_cpu: [alert_whatsapp]
+            """),
+            encoding="utf-8",
+        )
+
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            textwrap.dedent(f"""\
+                device:
+                  id: test-device-01
+                  name: Test Device
+                  location: Test Lab
+
+                sensors:
+                  - id: cpu-sensor
+                    type: cpu_percent
+                    protocol: psutil
+                    poll_interval_ms: 100
+
+                skills:
+                  - name: test-skill
+                    version: "0.1.0"
+                    config: {{}}
+
+                reasoning:
+                  default_tier: local
+                  local_model: ""
+                  model_path: ""
+                  offline_fallback: rule
+
+                gateway:
+                  enabled: false
+                  broker_url: ""
+
+                actions:
+                  primary_alert_channel: sms
+                  whatsapp:
+                    enabled: false
+                  sms:
+                    enabled: false
+                    incoming_webhook:
+                      enabled: true
+                      host: "127.0.0.1"
+                      port: 0
+                      path: "/webhooks/sms/africastalking"
+                      token: "test-token"
+                  relay:
+                    enabled: false
+
+                skills_dir: {str(tmp_path / "skills")}
+            """),
+            encoding="utf-8",
+        )
+
+        runtime = OriRuntime(config_path=str(cfg))
+
+        class _FakeServer:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self.serve_until = AsyncMock(side_effect=self._serve_until)
+
+            async def _serve_until(self, shutdown_event):
+                await shutdown_event.wait()
+
+        fake_instance = _FakeServer()
+
+        with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
+            async def _stop():
+                await asyncio.sleep(0.1)
+                await runtime.stop()
+
+            await asyncio.gather(runtime.start(), _stop())
+
+        cls.assert_called_once()
+        fake_instance.serve_until.assert_awaited_once()
+
+    async def test_runtime_skips_sms_webhook_without_token(self, tmp_path, monkeypatch):
+        _patch_external(monkeypatch)
+
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            textwrap.dedent("""\
+                name: test-skill
+                version: 0.1.0
+                author: test
+                sensors_required:
+                  - type: cpu_percent
+                    protocol: psutil
+                triggers:
+                  - name: high_cpu
+                    condition: "value > 90"
+                    action_tier: A
+                    cooldown_seconds: 0
+                    escalate_to: local_slm
+                actions:
+                  available:
+                    - name: alert_whatsapp
+                      tier: A
+                  defaults:
+                    high_cpu: [alert_whatsapp]
+            """),
+            encoding="utf-8",
+        )
+
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            textwrap.dedent(f"""\
+                device:
+                  id: test-device-01
+                  name: Test Device
+                  location: Test Lab
+                sensors:
+                  - id: cpu-sensor
+                    type: cpu_percent
+                    protocol: psutil
+                    poll_interval_ms: 100
+                skills:
+                  - name: test-skill
+                    version: "0.1.0"
+                    config: {{}}
+                reasoning:
+                  default_tier: local
+                  local_model: ""
+                  model_path: ""
+                  offline_fallback: rule
+                gateway:
+                  enabled: false
+                  broker_url: ""
+                actions:
+                  primary_alert_channel: sms
+                  whatsapp:
+                    enabled: false
+                  sms:
+                    enabled: false
+                    incoming_webhook:
+                      enabled: true
+                      token: ""
+                  relay:
+                    enabled: false
+                skills_dir: {str(tmp_path / "skills")}
+            """),
+            encoding="utf-8",
+        )
+
+        runtime = OriRuntime(config_path=str(cfg))
+        with patch("ori.runtime.SMSWebhookServer") as cls:
+            async def _stop():
+                await asyncio.sleep(0.1)
+                await runtime.stop()
+
+            await asyncio.gather(runtime.start(), _stop())
+
+        cls.assert_not_called()

@@ -163,3 +163,33 @@ async def test_loader_capability_validation():
         "defaults": {"over_threshold": ["alert_whatsapp"]}
     }
     loader._validate_actions(valid_actions, "good-skill", trigger_names=["over_threshold"])
+
+
+@pytest.mark.asyncio
+async def test_executor_returning_false_marks_action_not_executed():
+    dispatcher = ActionDispatcher()
+
+    async def _failing_executor(action, ctx):
+        return False
+
+    dispatcher.register_executor("failing_action", _failing_executor)
+    ctx = SkillContext(
+        skill=Skill(name="test", version="0.1.0", author="test", actions={}),
+        event=_event(),
+        state_store=None,
+    )
+
+    result = await dispatcher.dispatch(
+        action="failing_action",
+        tier="A",
+        context=ctx,
+        result=ReasoningResult(
+            text="test",
+            tier="rule",
+            model="rule_engine",
+            confidence=1.0,
+            tokens_used=0,
+            latency_ms=0,
+        ),
+    )
+    assert result.executed is False

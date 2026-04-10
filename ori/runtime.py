@@ -31,6 +31,7 @@ from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.psutil_adapter import PsutilAdapter
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent
+from ori.network.sms_webhook import SMSWebhookServer
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.skills.loader import SkillLoader
@@ -59,6 +60,7 @@ class OriRuntime:
         self._state_store: StateStore | None = None
         self._background_tasks: list[asyncio.Task] = []
         self._sms_action: SMSAction | None = None
+        self._sms_webhook_server: SMSWebhookServer | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -171,13 +173,13 @@ class OriRuntime:
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
 
-        async def _exec_terminate_process(action: str, ctx: SkillContext) -> None:
+        async def _exec_terminate_process(action: str, ctx: SkillContext) -> bool:
             pid, name = _process_target_from_context(ctx)
             if pid is None or not name:
                 logger.warning(
                     "[runtime] terminate_process requested but no unambiguous process target is available"
                 )
-                return
+                return False
             ok = await process_manager_action.terminate_process(pid=pid, name=name)
             if not ok:
                 logger.warning(
@@ -185,6 +187,7 @@ class OriRuntime:
                     pid,
                     name,
                 )
+            return ok
 
         dispatcher.register_executor("terminate_process", _exec_terminate_process)
 
@@ -297,6 +300,9 @@ class OriRuntime:
         self._background_tasks.append(
             asyncio.create_task(self._compaction_loop(), name="compaction")
         )
+        webhook_task = await self._start_sms_webhook_if_enabled(config)
+        if webhook_task is not None:
+            self._background_tasks.append(webhook_task)
 
         # Block here until stop() sets the shutdown event
         await self._shutdown_event.wait()
@@ -350,6 +356,46 @@ class OriRuntime:
             logger.warning("[runtime] SMSAction is not initialised")
             return False
         return await self._sms_action.ingest_incoming_webhook(payload)
+
+    async def _start_sms_webhook_if_enabled(
+        self, config: Config
+    ) -> asyncio.Task | None:
+        sms_cfg = config.actions.sms if isinstance(config.actions.sms, dict) else {}
+        webhook_cfg = sms_cfg.get("incoming_webhook", {})
+        if not isinstance(webhook_cfg, dict):
+            return None
+
+        enabled = _is_truthy(webhook_cfg.get("enabled", False))
+        if not enabled:
+            return None
+
+        if self._sms_action is None:
+            logger.warning("[runtime] SMS webhook enabled but SMSAction is unavailable")
+            return None
+
+        token = str(webhook_cfg.get("token", "") or "").strip()
+        if not token:
+            logger.warning(
+                "[runtime] SMS webhook enabled but incoming_webhook.token is empty; "
+                "refusing to start unauthenticated public ingress"
+            )
+            return None
+
+        host = str(webhook_cfg.get("host", "0.0.0.0"))
+        port = int(webhook_cfg.get("port", 8080))
+        path = str(webhook_cfg.get("path", "/webhooks/sms/africastalking"))
+
+        self._sms_webhook_server = SMSWebhookServer(
+            sms_action=self._sms_action,
+            host=host,
+            port=port,
+            path=path,
+            token=token,
+        )
+        return asyncio.create_task(
+            self._sms_webhook_server.serve_until(self._shutdown_event),
+            name="sms-webhook",
+        )
 
     # ── Background tasks ──────────────────────────────────────────────────────
 
@@ -519,6 +565,14 @@ def _message_from_context(ctx: SkillContext, fallback: str) -> str:
     return fallback
 
 
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
     """Resolve a single process target for `terminate_process`.
 
@@ -550,7 +604,21 @@ def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
 
     processes = reading.metadata.get("processes", [])
     if not isinstance(processes, list):
-        return None, ""
+        processes = []
+
+    recommended = reading.metadata.get("recommended_process")
+    if isinstance(recommended, dict):
+        pid = recommended.get("pid")
+        name = recommended.get("name")
+        if isinstance(pid, int) and isinstance(name, str) and name.strip():
+            return pid, name.strip()
+        if (
+            isinstance(pid, str)
+            and pid.isdigit()
+            and isinstance(name, str)
+            and name.strip()
+        ):
+            return int(pid), name.strip()
 
     valid: list[tuple[int, str]] = []
     for proc in processes:

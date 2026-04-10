@@ -352,7 +352,9 @@ class ActionDispatcher:
             if executor is not None:
                 if self._log_action_decisions:
                     logger.info("ActionDispatcher: executing action %r (tier=%s)", action, tier)
-                await executor(action, context)
+                maybe_ok = await executor(action, context)
+                if maybe_ok is False:
+                    executed = False
             else:
                 if self._log_action_decisions:
                     logger.debug(
