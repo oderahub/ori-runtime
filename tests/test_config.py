@@ -374,6 +374,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "http"
 
+    def test_accepts_victron_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: victron-battery\n    type: victron_battery_soc\n    protocol: victron\n    poll_interval_ms: 5000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "victron"
+
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
 
