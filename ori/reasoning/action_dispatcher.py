@@ -34,6 +34,12 @@ _NO_TOKENS = frozenset({"no", "n", "cancel", "stop", "reject", "deny"})
 
 _DEFAULT_APPROVAL_TIMEOUT = 300  # seconds
 _DEFAULT_SAFE_DEFAULT_ACTION = "log_to_dashboard"
+_TIER_RANK: dict[str, int] = {
+    ActionTier.INFORMATIONAL: 1,
+    ActionTier.SOFT_PHYSICAL: 2,
+    ActionTier.HARD_PHYSICAL: 3,
+    ActionTier.SAFETY_CRITICAL: 4,
+}
 
 
 def _parse_approval_response(response: str | None) -> bool:
@@ -57,6 +63,10 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _tier_rank(tier: str) -> int:
+    return _TIER_RANK.get(str(tier).upper(), 0)
+
+
 class ActionDispatcher:
     """Routes reasoning results to execution paths based on action tier.
 
@@ -67,7 +77,7 @@ class ActionDispatcher:
     Args:
         state_store: :class:`~ori.state.store.StateStore` for logging.
             Falls back to ``context.state_store`` at dispatch time if not set.
-        alert_sender: Object with ``send(to: str, message: str) -> Awaitable``
+        alert_sender: Object with ``send(message: str, to_number: str) -> Awaitable``
             used to deliver approval messages. ``None`` disables the approval
             workflow (actions fall back to safe_default immediately).
         config: Dispatcher-level config dict.  Recognised keys:
@@ -147,6 +157,36 @@ class ActionDispatcher:
         Returns:
             :class:`~ori.network.events.ActionResult` describing what happened.
         """
+        # Double-check against skill action capability tiers.
+        # This is an escalation-only guardrail: it may raise a tier, never lower it.
+        if context and hasattr(context, "skill") and hasattr(context.skill, "actions"):
+            if "available" in context.skill.actions:
+                for avail_action in context.skill.actions["available"]:
+                    if avail_action.get("name") == action and avail_action.get("tier"):
+                        defined_tier = str(avail_action["tier"]).upper()
+                        if tier == ActionTier.SAFETY_CRITICAL:
+                            break
+                        incoming_rank = _tier_rank(tier)
+                        defined_rank = _tier_rank(defined_tier)
+                        if defined_rank > incoming_rank:
+                            logger.debug(
+                                "ActionDispatcher: escalating action %r from Tier %s to Tier %s "
+                                "based on skill capability declaration",
+                                action,
+                                tier,
+                                defined_tier,
+                            )
+                            tier = defined_tier
+                        elif 0 < defined_rank < incoming_rank:
+                            logger.warning(
+                                "ActionDispatcher: refusing to downgrade action %r from Tier %s "
+                                "to Tier %s from capability declaration",
+                                action,
+                                tier,
+                                defined_tier,
+                            )
+                        break
+
         # Log autonomous Tier D dispatch to override_log before execution —
         # a safety-critical action firing without operator approval is itself
         # an override event that must be auditable.
@@ -408,7 +448,7 @@ class ActionDispatcher:
         operator_contact = self._config.get("operator_contact", "")
         if self._alert_sender is not None and operator_contact:
             try:
-                await self._alert_sender.send(operator_contact, message)
+                await self._alert_sender.send(message=message, to_number=operator_contact)
             except Exception:
                 logger.exception(
                     "ActionDispatcher: failed to send approval request for action=%r",
@@ -572,7 +612,7 @@ class ActionDispatcher:
             f"Observation: {result.text}"
         )
         try:
-            await self._alert_sender.send(secondary, message)
+            await self._alert_sender.send(message=message, to_number=secondary)
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to send escalation to secondary contact"

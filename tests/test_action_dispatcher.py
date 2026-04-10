@@ -42,10 +42,13 @@ def _event() -> OriEvent:
 class FakeSkill:
     name: str = "test-skill"
     config: dict = field(default_factory=dict)
+    actions: dict = field(default_factory=dict)
 
 
-def _context(skill_config: dict | None = None) -> SkillContext:
-    skill = FakeSkill(config=skill_config or {})
+def _context(
+    skill_config: dict | None = None, actions: dict | None = None
+) -> SkillContext:
+    skill = FakeSkill(config=skill_config or {}, actions=actions or {})
     return SkillContext(skill=skill, event=_event(), state_store=None)
 
 
@@ -767,6 +770,41 @@ class TestApprovalMessageFormat:
         )
         assert "Monday" in msg_utc
         assert "Tuesday" in msg_wat
+
+
+# ─── Capability tier guard ───────────────────────────────────────────────────
+
+
+class TestCapabilityTierGuard:
+    async def test_capability_tier_can_escalate(self):
+        d = ActionDispatcher(
+            config={"operator_contact": "+234000"},
+            alert_sender=AsyncMock(),
+        )
+        ctx = _context(
+            actions={"available": [{"name": "trip_relay", "tier": "C"}]}
+        )
+
+        with patch.object(d, "_listen_for_response", return_value="no"):
+            result = await d.dispatch("trip_relay", "B", ctx, _result(action_tier="B"))
+
+        assert result.tier == "C"
+        assert d._alert_sender.send.called
+
+    async def test_capability_tier_never_downgrades(self):
+        d = ActionDispatcher(
+            config={"operator_contact": "+234000"},
+            alert_sender=AsyncMock(),
+        )
+        ctx = _context(
+            actions={"available": [{"name": "trip_relay", "tier": "A"}]}
+        )
+
+        with patch.object(d, "_listen_for_response", return_value="no"):
+            result = await d.dispatch("trip_relay", "C", ctx, _result(action_tier="C"))
+
+        assert result.tier == "C"
+        assert d._alert_sender.send.called
 
 
 # ─── Unknown tier fallback ────────────────────────────────────────────────────
