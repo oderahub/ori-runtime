@@ -528,6 +528,13 @@ class ActionDispatcher:
                     override_type="rejection",
                     device_id=device_id,
                 )
+            if not timed_out and operator_response is not None:
+                await self._store_rejection_pattern(
+                    store=store,
+                    action=action,
+                    context=context,
+                    operator_response=operator_response,
+                )
 
         return ActionResult(
             action_name=action,
@@ -538,6 +545,74 @@ class ActionDispatcher:
             timestamp=_now_ms(),
             operator_response=operator_response,
         )
+
+    async def _store_rejection_pattern(
+        self,
+        store: Any,
+        action: str,
+        context: SkillContext,
+        operator_response: str,
+    ) -> None:
+        """Persist a rejected Tier C pattern for future informational capping."""
+        if store is None:
+            return
+        if not hasattr(type(store), "store_rejection") or not hasattr(
+            type(store), "_build_rejection_pattern_key"
+        ):
+            return
+        store_rejection = getattr(store, "store_rejection", None)
+        key_builder = getattr(store, "_build_rejection_pattern_key", None)
+        if not callable(store_rejection) or not callable(key_builder):
+            return
+        if context is None or context.event is None or context.event.reading is None:
+            return
+
+        reading = context.event.reading
+        evt = context.event
+        trigger_name = ""
+        if isinstance(getattr(evt, "context", None), dict):
+            trigger_name = str(evt.context.get("__handler_trigger_name") or "")
+        if not trigger_name:
+            trigger_name = str(evt.sensor_id or "unknown_trigger")
+
+        value_bucket = round(float(reading.value) * 2.0) / 2.0
+        dt = datetime.datetime.fromtimestamp(
+            evt.timestamp / 1000.0, tz=datetime.timezone.utc
+        )
+        hour_bucket = (dt.hour // 2) * 2
+        day_of_week = dt.weekday()
+
+        try:
+            pattern_key = key_builder(
+                reading.sensor_type,
+                trigger_name,
+                action,
+                float(reading.value),
+                int(evt.timestamp),
+            )
+            maybe_coro = store_rejection(
+                pattern_key=pattern_key,
+                trigger_name=trigger_name,
+                proposed_action=action,
+                operator_response=operator_response,
+                device_id=str(evt.device_id or "unknown"),
+                sensor_type=str(reading.sensor_type or ""),
+                value_bucket=value_bucket,
+                time_of_day_hour=hour_bucket,
+                day_of_week=day_of_week,
+                expiry_days=int(self._config.get("rejection_expiry_days", 30)),
+            )
+            if asyncio.iscoroutine(maybe_coro):
+                await maybe_coro
+            logger.info(
+                "Rejection stored for pattern %s — future identical patterns capped at Tier A",
+                pattern_key,
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed to persist rejection pattern for action=%r",
+                action,
+            )
 
     async def _listen_for_response(
         self, from_number: str, timeout_seconds: int

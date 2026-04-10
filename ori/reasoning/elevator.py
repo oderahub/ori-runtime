@@ -177,7 +177,28 @@ class IntelligenceElevator:
         """
         tier = await self.select_tier(event, skill, state_store)
 
-        rule_result, hook_ctx = await self._evaluate_rules_with_hooks(event, skill, state_store)
+        rule_result, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
+        rejection_record = await self._lookup_rejection_record(
+            event=event,
+            skill=skill,
+            rule_result=rule_result,
+            state_store=state_store,
+        )
+        rejection_note: str | None = None
+        if rejection_record is not None:
+            operator_reason = str(rejection_record.get("operator_response") or "").strip()
+            if operator_reason:
+                rejection_note = (
+                    "NOTE: A similar pattern was previously rejected by the operator. "
+                    f"Reason: {operator_reason}. Consider this context."
+                )
+            else:
+                rejection_note = (
+                    "NOTE: A similar pattern was previously rejected by the operator. "
+                    "Consider this context."
+                )
+            if isinstance(event.context, dict):
+                event.context["__rejection_cap_tier_a"] = True
 
         if tier == "rule":
             return ReasoningResult(
@@ -196,12 +217,19 @@ class IntelligenceElevator:
                 event,
                 skill,
                 trigger_name=rule_result.rule_name if rule_result.matched else None,
+                rejection_note=rejection_note,
             )
             try:
                 result = await self._local_llm.reason(prompt)
                 result.prompt = prompt
-                if rule_result.matched and result.action_tier != "D":
+                if (
+                    rule_result.matched
+                    and result.action_tier != "D"
+                    and rejection_record is None
+                ):
                     result.action_tier = rule_result.action_tier
+                if rejection_record is not None:
+                    result.action_tier = "A"
                 result.proposed_action = result.proposed_action or rule_result.action
                 return result
             except Exception:
@@ -213,9 +241,11 @@ class IntelligenceElevator:
 
         # Fallback stub — gateway/cloud tiers not yet wired
         stub = self._stub_result(tier, event)
-        if rule_result.matched and stub.action_tier != "D":
+        if rule_result.matched and stub.action_tier != "D" and rejection_record is None:
             stub.action_tier = rule_result.action_tier
             stub.proposed_action = rule_result.action
+        if rejection_record is not None:
+            stub.action_tier = "A"
         return stub
 
     async def _is_offline_async(self) -> bool:
@@ -422,6 +452,120 @@ class IntelligenceElevator:
                 "IntelligenceElevator: failed to publish low-power alert event"
             )
 
+    def _causal_memory_cfg(self) -> dict[str, Any]:
+        """Return causal-memory config from either dataclass or raw dict."""
+        cfg = self._config
+        if cfg is None:
+            return {}
+        if isinstance(cfg, dict):
+            raw = cfg.get("causal_memory") or {}
+            return raw if isinstance(raw, dict) else {}
+        raw = getattr(cfg, "causal_memory", {}) or {}
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _tier_rank(tier: str) -> int:
+        return {"A": 1, "B": 2, "C": 3, "D": 4}.get(str(tier).upper(), 0)
+
+    @staticmethod
+    def _resolve_default_action_for_trigger(skill: Any, trigger_name: str) -> str | None:
+        actions: list[str] = []
+        if hasattr(skill, "get_default_actions_for_trigger"):
+            maybe = skill.get_default_actions_for_trigger(trigger_name)
+            if isinstance(maybe, list):
+                actions = [a for a in maybe if isinstance(a, str) and a]
+        elif hasattr(skill, "actions") and isinstance(skill.actions, dict):
+            defaults = skill.actions.get("defaults") or {}
+            if isinstance(defaults, dict):
+                maybe = defaults.get(trigger_name, [])
+                if isinstance(maybe, list):
+                    actions = [a for a in maybe if isinstance(a, str) and a]
+        return actions[0] if actions else None
+
+    async def _lookup_rejection_record(
+        self,
+        event: OriEvent,
+        skill: Any,
+        rule_result: Any,
+        state_store: Any,
+    ) -> dict[str, Any] | None:
+        """Lookup a previously rejected pattern for the matched trigger/action."""
+        cfg = self._causal_memory_cfg()
+        expiry_days = int(cfg.get("rejection_expiry_days", 0))
+        if expiry_days == 0 and not cfg:
+            return None
+        if state_store is None:
+            return None
+        if not hasattr(type(state_store), "lookup_rejection") or not hasattr(
+            type(state_store), "_build_rejection_pattern_key"
+        ):
+            return None
+        if not getattr(rule_result, "matched", False):
+            return None
+        if event.reading is None:
+            return None
+
+        trigger_name = str(getattr(rule_result, "rule_name", "") or "")
+        if not trigger_name:
+            return None
+
+        proposed_action = str(getattr(rule_result, "action", "") or "")
+        if not proposed_action:
+            proposed_action = self._resolve_default_action_for_trigger(skill, trigger_name) or ""
+        if not proposed_action:
+            return None
+
+        try:
+            pattern_key = state_store._build_rejection_pattern_key(
+                event.reading.sensor_type,
+                trigger_name,
+                proposed_action,
+                float(event.reading.value),
+                int(event.timestamp),
+            )
+            record = await state_store.lookup_rejection(pattern_key)
+            if isinstance(record, dict):
+                return record
+        except Exception:
+            logger.exception(
+                "IntelligenceElevator: rejection lookup failed for trigger=%r action=%r",
+                trigger_name,
+                proposed_action,
+            )
+        return None
+
+    def _filter_actions_by_max_tier(
+        self,
+        skill: Any,
+        actions: list[str],
+        max_tier: str,
+    ) -> list[str]:
+        available = []
+        if hasattr(skill, "actions") and isinstance(skill.actions, dict):
+            available = skill.actions.get("available") or []
+        if not isinstance(available, list):
+            return []
+
+        tiers_by_action: dict[str, str] = {}
+        for entry in available:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                tier = str(entry.get("tier", "A")).upper()
+                if isinstance(name, str) and name:
+                    tiers_by_action[name] = tier
+            elif isinstance(entry, str):
+                tiers_by_action[entry] = "A"
+
+        max_rank = self._tier_rank(max_tier)
+        filtered: list[str] = []
+        for action_name in actions:
+            tier = tiers_by_action.get(action_name)
+            if tier is None:
+                continue
+            if self._tier_rank(tier) <= max_rank:
+                filtered.append(action_name)
+        return filtered
+
     async def reason_and_dispatch(
         self,
         event: OriEvent,
@@ -474,8 +618,20 @@ class IntelligenceElevator:
             # Clamp any model-produced tier to the matched trigger's declared tier.
             # Trigger tier is the authority; model output must not escalate or
             # downgrade physical actuation boundaries.
+            rejection_capped = bool(
+                isinstance(getattr(event, "context", None), dict)
+                and event.context.get("__rejection_cap_tier_a")
+            )
             if rule_res.matched and rule_res.action_tier in {"A", "B", "C", "D"}:
-                if result.action_tier != rule_res.action_tier:
+                allow_rejection_downgrade = (
+                    rejection_capped
+                    and result.action_tier == "A"
+                    and rule_res.action_tier != "D"
+                )
+                if (
+                    result.action_tier != rule_res.action_tier
+                    and not allow_rejection_downgrade
+                ):
                     logger.warning(
                         "IntelligenceElevator: clamping action tier from %s to %s "
                         "for trigger=%r",
@@ -526,6 +682,16 @@ class IntelligenceElevator:
                         if isinstance(entry, dict) and entry.get("name") == proposed:
                             actions = [proposed]
                             break
+
+            if rejection_capped and actions:
+                actions = self._filter_actions_by_max_tier(skill, actions, max_tier="A")
+                if not actions:
+                    logger.warning(
+                        "IntelligenceElevator: rejection cap active but no Tier A "
+                        "actions declared for trigger=%r — falling back to log_to_dashboard",
+                        rule_res.rule_name,
+                    )
+                    actions = ["log_to_dashboard"]
 
             context = SkillContext(skill=skill, event=event, state_store=state_store)
             for action in actions:
@@ -615,6 +781,7 @@ class IntelligenceElevator:
         event: OriEvent,
         skill: Any,
         trigger_name: str | None = None,
+        rejection_note: str | None = None,
     ) -> str:
         """Build a plain-text prompt from the event and skill metadata."""
         lines: list[str] = []
@@ -637,6 +804,9 @@ class IntelligenceElevator:
         else:
             lines.append("Is this reading anomalous? What is the most likely cause?")
             lines.append("Answer in plain English, 2-3 sentences, no jargon.")
+        if rejection_note:
+            lines.append("")
+            lines.append(rejection_note)
         return "\n".join(lines)
 
     @staticmethod
