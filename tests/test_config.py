@@ -503,6 +503,72 @@ class TestActionsValidation:
             Config.load(yaml_path)
 
 
+# ─── HAL / Circuit Breaker validation ─────────────────────────────────────────
+
+
+class TestHalCircuitBreakerValidation:
+    def _base_yaml(self, hal_block: str) -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+hal:
+{hal_block}
+"""
+
+    def test_failure_threshold_must_be_positive(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  circuit_breaker:\n"
+                "    failure_threshold: 0\n"
+                "    recovery_timeout_s: 300\n"
+                "    success_threshold: 2"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="failure_threshold"):
+            Config.load(yaml_path)
+
+    def test_recovery_timeout_must_be_positive(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  circuit_breaker:\n"
+                "    failure_threshold: 5\n"
+                "    recovery_timeout_s: 0\n"
+                "    success_threshold: 2"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="recovery_timeout_s"):
+            Config.load(yaml_path)
+
+    def test_success_threshold_must_be_positive(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  circuit_breaker:\n"
+                "    failure_threshold: 5\n"
+                "    recovery_timeout_s: 300\n"
+                "    success_threshold: 0"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="success_threshold"):
+            Config.load(yaml_path)
+
+
 # ─── Environment variable expansion ───────────────────────────────────────────
 
 

@@ -393,6 +393,19 @@ def _parse_hal(data: Any) -> HalConfig:
     except (ValueError, TypeError):
         logger.warning("[config] 'hal.circuit_breaker' has invalid types. Falling back to default circuit breaker.")
         cb_out = default_cb
+    else:
+        if cb_out["failure_threshold"] < 1:
+            raise ConfigValidationError(
+                "hal.circuit_breaker.failure_threshold must be >= 1."
+            )
+        if cb_out["recovery_timeout_s"] < 1:
+            raise ConfigValidationError(
+                "hal.circuit_breaker.recovery_timeout_s must be >= 1."
+            )
+        if cb_out["success_threshold"] < 1:
+            raise ConfigValidationError(
+                "hal.circuit_breaker.success_threshold must be >= 1."
+            )
 
     return HalConfig(circuit_breaker=cb_out)
 
