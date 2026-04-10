@@ -1,0 +1,73 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: hvac-refrigerant-monitor
+version: 0.1.0
+author: wasiubakare
+description: >
+  Multi-joint refrigerant leak detection for HVAC systems using Figaro TGS 5141
+  sensors (R22/R410A) plus compressor current anomaly monitoring.
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: gas_concentration
+    protocol: i2c
+  - type: current_clamp
+    protocol: i2c
+
+triggers:
+  - name: gas_leak_detected
+    condition: "sensor_type == 'gas_concentration' and value > 400"
+    bypass_llm: true
+    action_tier: D
+    cooldown_seconds: 0
+
+  - name: gas_concentration_elevated
+    condition: "sensor_type == 'gas_concentration' and value > 200 and value <= 400"
+    cooldown_seconds: 300
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: compressor_current_anomaly
+    condition: "sensor_type == 'current_clamp' and value > (history.avg_24h('load_current') * 1.3)"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
+prompts:
+  gas_concentration: |
+    Gas concentration reading: {value} ppm
+    Warning threshold: 200 ppm
+    Critical threshold: 400 ppm
+    Time: {time}
+
+    Is this likely a refrigerant leak?
+    What immediate checks should the HVAC technician perform?
+    Answer in 2-3 plain sentences.
+
+  current_clamp: |
+    Compressor current reading: {value} A
+    24-hour baseline: {history.avg_24h('load_current')} A
+    Trigger condition: current > 1.3x baseline
+    Time: {time}
+
+    Is this compressor current abnormal?
+    What are the likely causes and first safe troubleshooting steps?
+    Answer in 2-3 plain sentences.
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: alert_sms
+      tier: A
+    - name: close_gas_valve
+      tier: D
+    - name: log_to_dashboard
+      tier: A
+
+  defaults:
+    gas_leak_detected: [close_gas_valve, alert_whatsapp, alert_sms, log_to_dashboard]
+    gas_concentration_elevated: [alert_whatsapp, log_to_dashboard]
+    compressor_current_anomaly: [alert_whatsapp, log_to_dashboard]
