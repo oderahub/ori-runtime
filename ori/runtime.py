@@ -63,8 +63,59 @@ class OriRuntime:
         self._sms_action: SMSAction | None = None
         self._sms_webhook_server: SMSWebhookServer | None = None
         self._dispatcher: ActionDispatcher | None = None
+        self._event_bus: EventBus | None = None
+        self._skill_loader: SkillLoader | None = None
+        self._skills_dir: str | None = None
+        self._loaded_skills: list[Any] = []
+        self._skill_subscriptions: list[tuple[str, Any]] = []
+        self._skill_reload_lock: asyncio.Lock | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    async def reload_skills(self) -> bool:
+        """Reload skills from ``skills_dir`` without restarting the runtime.
+
+        This method preserves the same validation and sandbox rules as startup:
+        it reuses :class:`ori.skills.loader.SkillLoader` and only swaps handlers
+        after the new skill set has been loaded successfully.
+        """
+        if self._skill_reload_lock is None:
+            self._skill_reload_lock = asyncio.Lock()
+
+        async with self._skill_reload_lock:
+            if self._event_bus is None or self._skill_loader is None:
+                logger.warning(
+                    "[runtime] skill reload requested before startup completed"
+                )
+                return False
+
+            skills_dir = self._skills_dir or str(
+                Path(self._config_path).parent / "skills"
+            )
+            loaded = self._skill_loader.load_all(skills_dir)
+
+            # Safety-first fallback: do not replace a working handler graph
+            # with an empty one due to a transient load issue.
+            if not loaded and self._loaded_skills:
+                logger.warning(
+                    "[runtime] skill reload found 0 valid skills in %s — keeping existing handlers",
+                    skills_dir,
+                )
+                return False
+
+            self._unregister_skill_handlers()
+            for skill in loaded:
+                subscriptions = self._skill_loader.register(skill, self._event_bus)
+                self._skill_subscriptions.extend(subscriptions)
+
+            self._loaded_skills = loaded
+            logger.info(
+                "[runtime] skills reloaded — skills=%d triggers=%d source=%s",
+                len(self._loaded_skills),
+                sum(len(s.triggers) for s in self._loaded_skills),
+                skills_dir,
+            )
+            return True
 
     async def start(self) -> None:
         """Full startup sequence. Blocks until a shutdown signal is received."""
@@ -86,7 +137,8 @@ class OriRuntime:
         for handler in list(root_logger.handlers):
             if (
                 isinstance(handler, RotatingFileHandler)
-                and os.path.abspath(getattr(handler, "baseFilename", "")) == target_log_file
+                and os.path.abspath(getattr(handler, "baseFilename", ""))
+                == target_log_file
             ):
                 root_logger.removeHandler(handler)
                 try:
@@ -242,7 +294,9 @@ class OriRuntime:
                 )
             return ok
 
-        dispatcher.register_executor("reset_kernel_subsystem", _exec_reset_kernel_subsystem)
+        dispatcher.register_executor(
+            "reset_kernel_subsystem", _exec_reset_kernel_subsystem
+        )
 
         # log_to_dashboard — override built-in with device_id from config
         async def _exec_log_to_dashboard(action: str, *_: Any) -> None:
@@ -272,23 +326,25 @@ class OriRuntime:
         # ── Step E: EventBus ──────────────────────────────────────────────────
         event_bus = EventBus()
         elevator.attach_event_bus(event_bus)
+        self._event_bus = event_bus
+        self._skill_reload_lock = asyncio.Lock()
 
         # ── Step F: Load skills and register handlers ─────────────────────────
         skills_dir: str = config.raw.get(
             "skills_dir",
             str(Path(self._config_path).parent / "skills"),
         )
+        self._skills_dir = skills_dir
         loader = SkillLoader(
             elevator=elevator,
             state_store=self._state_store,
             dispatcher=dispatcher,
         )
-        skills = loader.load_all(skills_dir)
-        for skill in skills:
-            loader.register(skill, event_bus)
+        self._skill_loader = loader
+        await self.reload_skills()
 
         # ── Step G: Log startup tier configuration ────────────────────────────
-        for skill in skills:
+        for skill in self._loaded_skills:
             logger.info("[skill] %s v%s loaded", skill.name, skill.version)
             for trigger in skill.triggers:
                 escalation = "bypass_llm" if trigger.bypass_llm else trigger.escalate_to
@@ -302,8 +358,8 @@ class OriRuntime:
         logger.info(
             "[runtime] event loop ready — device=%s skills=%d triggers=%d",
             config.device.id,
-            len(skills),
-            sum(len(s.triggers) for s in skills),
+            len(self._loaded_skills),
+            sum(len(s.triggers) for s in self._loaded_skills),
         )
 
         # ── Register signal handlers ──────────────────────────────────────────
@@ -312,6 +368,11 @@ class OriRuntime:
             signal.SIGTERM, lambda: asyncio.create_task(self.stop())
         )
         loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.stop()))
+        if hasattr(signal, "SIGHUP"):
+            loop.add_signal_handler(
+                signal.SIGHUP, lambda: asyncio.create_task(self.reload_skills())
+            )
+            logger.info("[runtime] SIGHUP handler active — send HUP to reload skills")
 
         # ── Start background tasks ────────────────────────────────────────────
         for sensor_cfg in config.sensors:
@@ -414,6 +475,9 @@ class OriRuntime:
         if self._state_store is not None:
             await self._state_store.close()
 
+        self._unregister_skill_handlers()
+        self._loaded_skills = []
+
         logger.info("[runtime] shutdown complete")
 
     async def ingest_sms_webhook(self, payload: dict[str, Any]) -> bool:
@@ -462,6 +526,14 @@ class OriRuntime:
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",
         )
+
+    def _unregister_skill_handlers(self) -> None:
+        if self._event_bus is None:
+            self._skill_subscriptions.clear()
+            return
+        for sensor_type, handler in self._skill_subscriptions:
+            self._event_bus.unsubscribe(sensor_type, handler)
+        self._skill_subscriptions.clear()
 
     # ── Background tasks ──────────────────────────────────────────────────────
 

@@ -339,6 +339,74 @@ class TestStartupLogs:
         )
 
 
+class TestSkillReload:
+    async def test_reload_skills_registers_new_handlers(
+        self, minimal_config: Path, monkeypatch
+    ):
+        _patch_external(monkeypatch)
+        runtime = OriRuntime(config_path=str(minimal_config))
+
+        start_task = asyncio.create_task(runtime.start())
+        try:
+            await asyncio.sleep(0.2)
+            assert runtime._event_bus is not None
+            assert runtime._event_bus.subscriber_count("cpu_percent") == 1
+
+            skills_root = Path(minimal_config).parent / "skills"
+            skill_dir = skills_root / "second-skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "skill.yaml").write_text(
+                textwrap.dedent("""\
+                    name: second-skill
+                    version: 0.1.0
+                    author: test
+                    sensors_required:
+                      - type: cpu_percent
+                    triggers:
+                      - name: high_cpu_secondary
+                        condition: "value > 95"
+                        action_tier: A
+                        cooldown_seconds: 0
+                        escalate_to: local_slm
+                    actions:
+                      available:
+                        - name: alert_whatsapp
+                          tier: A
+                      defaults:
+                        high_cpu_secondary: [alert_whatsapp]
+                """),
+                encoding="utf-8",
+            )
+
+            ok = await runtime.reload_skills()
+            assert ok is True
+            assert runtime._event_bus.subscriber_count("cpu_percent") == 2
+        finally:
+            await runtime.stop()
+            await start_task
+
+    async def test_reload_skills_keeps_existing_on_empty_result(
+        self, minimal_config: Path, monkeypatch
+    ):
+        _patch_external(monkeypatch)
+        runtime = OriRuntime(config_path=str(minimal_config))
+
+        start_task = asyncio.create_task(runtime.start())
+        try:
+            await asyncio.sleep(0.2)
+            assert runtime._event_bus is not None
+            before = runtime._event_bus.subscriber_count("cpu_percent")
+            assert before == 1
+
+            runtime._skills_dir = str(Path(minimal_config).parent / "missing-skills")
+            ok = await runtime.reload_skills()
+            assert ok is False
+            assert runtime._event_bus.subscriber_count("cpu_percent") == before
+        finally:
+            await runtime.stop()
+            await start_task
+
+
 class TestShutdown:
     async def test_shutdown_drains_tier_d_tasks(self, minimal_config, monkeypatch):
         """Runtime must await dispatcher-tracked Tier D tasks before shutdown."""

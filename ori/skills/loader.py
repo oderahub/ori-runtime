@@ -287,7 +287,9 @@ class SkillLoader:
             hooks=hooks,
         )
 
-    def _validate_skill_metadata(self, raw: dict[str, Any], skill_dir_name: str) -> None:
+    def _validate_skill_metadata(
+        self, raw: dict[str, Any], skill_dir_name: str
+    ) -> None:
         """Validate core metadata presence for runtime-loadable skills."""
         name = str(raw.get("name") or "").strip()
         version = str(raw.get("version") or "").strip()
@@ -311,7 +313,7 @@ class SkillLoader:
                 f"Skill {name!r}: triggers must be a non-empty list"
             )
 
-    def register(self, skill: Skill, event_bus: Any) -> None:
+    def register(self, skill: Skill, event_bus: Any) -> list[tuple[str, Any]]:
         """Wire EventBus handlers for every trigger in *skill*.
 
         One handler is registered per (trigger, sensor_type) pair.  The handler:
@@ -327,8 +329,12 @@ class SkillLoader:
             skill: A loaded and validated :class:`Skill`.
             event_bus: The :class:`~ori.network.event_bus.EventBus` instance
                 to subscribe handlers on.
+        Returns:
+            List of ``(sensor_type, handler)`` tuples that were subscribed.
+            Callers can reuse this list to unsubscribe the exact handlers later.
         """
         tracker = _CooldownTracker()
+        subscriptions: list[tuple[str, Any]] = []
 
         for trigger in skill.triggers:
             sensor_types = [
@@ -341,12 +347,14 @@ class SkillLoader:
             for sensor_type in sensor_types:
                 handler = self._make_handler(skill, trigger, tracker)
                 event_bus.subscribe(sensor_type, handler)
+                subscriptions.append((sensor_type, handler))
                 logger.debug(
                     "SkillLoader: registered handler skill=%r trigger=%r sensor_type=%r",
                     skill.name,
                     trigger.name,
                     sensor_type,
                 )
+        return subscriptions
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
