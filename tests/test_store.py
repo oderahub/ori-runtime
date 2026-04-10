@@ -431,3 +431,60 @@ class TestReasoningLog:
         )
         assert row["device_id"] == "ikeja-01"
         assert row["model"] == "qwen2.5"
+
+
+# ─── inbound_messages ─────────────────────────────────────────────────────────
+
+
+class TestInboundMessages:
+    async def test_store_and_consume_message(self, store):
+        await store.store_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            message="YES",
+        )
+        reply = await store.consume_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            since_ms=0,
+        )
+        assert reply == "YES"
+
+    async def test_consume_respects_since_ms(self, store):
+        await store.store_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            message="OLD",
+            received_at_ms=1_000,
+        )
+        await store.store_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            message="NEW",
+            received_at_ms=2_000,
+        )
+        reply = await store.consume_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            since_ms=1_500,
+        )
+        assert reply == "NEW"
+
+    async def test_consume_is_single_use(self, store):
+        await store.store_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            message="NO",
+        )
+        first = await store.consume_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            since_ms=0,
+        )
+        second = await store.consume_incoming_message(
+            channel="sms",
+            from_number="+234800000000",
+            since_ms=0,
+        )
+        assert first == "NO"
+        assert second is None

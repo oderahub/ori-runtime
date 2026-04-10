@@ -12,17 +12,9 @@ SMS is the primary alert channel because:
 
 Approval workflow note
 ----------------------
-SMS does not support an inline response listener.  Africa's Talking
-delivers incoming SMS via a webhook (HTTP POST to a configured URL on
-your server).  For the PoC, :meth:`SMSAction.listen_for_response` is
-stubbed and returns ``None``.  Full Tier C approval over SMS requires:
-
-1. Expose an HTTPS endpoint that Africa's Talking can POST to.
-2. Store incoming messages in the StateStore keyed by sender number.
-3. Replace the stub with a polling loop that reads from StateStore.
-
-For the PoC and most Tier A/B deployments, use WhatsApp for approval
-workflows and SMS for fire-and-forget alerts.
+Africa's Talking delivers inbound SMS via webhook. This class supports
+Tier C approval listening when a webhook process stores inbound SMS into
+StateStore via :meth:`ingest_incoming_webhook`.
 
 Usage
 -----
@@ -33,6 +25,8 @@ Usage
 import asyncio
 import logging
 import os
+import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +47,18 @@ class SMSAction:
     warning and return ``False`` without raising.
     """
 
-    def __init__(self) -> None:
+    _POLL_INTERVAL_SECONDS: int = 5
+
+    def __init__(
+        self,
+        state_store: Any = None,
+        poll_interval_seconds: int = _POLL_INTERVAL_SECONDS,
+    ) -> None:
         self._api_key = os.environ.get("AT_API_KEY", "")
         self._username = os.environ.get("AT_USERNAME", "sandbox")
         self._sender_id = os.environ.get("AT_SENDER_ID", "ORI")
+        self._state_store = state_store
+        self._poll_interval_seconds = max(1, int(poll_interval_seconds))
         self._ready = bool(self._api_key)
         if not self._ready:
             logger.warning("SMSAction: AT_API_KEY is not set — SMS delivery disabled.")
@@ -132,39 +134,94 @@ class SMSAction:
             )
             return False
 
+    async def ingest_incoming_webhook(self, payload: dict[str, Any]) -> bool:
+        """Store one inbound Africa's Talking webhook message in StateStore.
+
+        Expected payload keys:
+            - ``from`` (or ``from_number``)
+            - ``text`` (or ``message``)
+
+        Returns ``True`` when the message is persisted, otherwise ``False``.
+        """
+        if self._state_store is None:
+            logger.warning(
+                "SMSAction.ingest_incoming_webhook: no StateStore configured"
+            )
+            return False
+
+        raw_from = str(payload.get("from") or payload.get("from_number") or "")
+        raw_text = str(payload.get("text") or payload.get("message") or "")
+        from_number = _normalize_phone(raw_from)
+        message = raw_text.strip()
+        if not from_number or not message:
+            logger.warning(
+                "SMSAction.ingest_incoming_webhook: invalid payload (from=%r text=%r)",
+                raw_from,
+                raw_text,
+            )
+            return False
+
+        try:
+            await self._state_store.store_incoming_message(
+                channel="sms",
+                from_number=from_number,
+                message=message,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "SMSAction.ingest_incoming_webhook: failed to store inbound SMS"
+            )
+            return False
+
     async def listen_for_response(
         self,
         from_number: str,
-        timeout_seconds: int,  # noqa: ARG002
+        timeout_seconds: int,
     ) -> str | None:
-        """Stub — incoming SMS via Africa's Talking requires a webhook.
-
-        Africa's Talking delivers inbound SMS by POSTing to a configured
-        HTTPS endpoint; there is no polling API.  Full Tier C approval
-        workflow over SMS therefore requires:
-
-        1. A publicly reachable HTTPS endpoint (e.g. on ori-gateway).
-        2. The endpoint stores the incoming message body in StateStore,
-           keyed by the sender's phone number.
-        3. This method is replaced with a loop that polls StateStore
-           until a message from *from_number* arrives or the timeout
-           elapses.
-
-        For the PoC, approval workflows should use
-        :class:`~ori.actions.whatsapp.WhatsAppAction` as the response
-        channel.  SMS remains the preferred *send* channel for Tier A
-        alerts.
+        """Poll StateStore for inbound SMS approval responses.
 
         Returns:
-            Always ``None`` until the webhook integration is implemented.
+            The first matching SMS body, or ``None`` on timeout / misconfig.
         """
-        logger.info(
-            "SMSAction.listen_for_response: incoming SMS requires an "
-            "Africa's Talking webhook endpoint — response listening is not "
-            "yet implemented.  Configure an AT incoming SMS webhook and "
-            "wire it to StateStore to enable SMS-based approval responses. "
-            "(waiting for reply from %r, timeout=%ds — returning None)",
-            from_number,
-            timeout_seconds,
-        )
+        if self._state_store is None:
+            logger.info(
+                "SMSAction.listen_for_response: no StateStore configured; "
+                "cannot listen for SMS replies"
+            )
+            return None
+
+        normalized_from = _normalize_phone(from_number)
+        if not normalized_from:
+            return None
+
+        since_ms = int(time.time() * 1000)
+        deadline = time.monotonic() + timeout_seconds
+
+        while time.monotonic() < deadline:
+            try:
+                message = await self._state_store.consume_incoming_message(
+                    channel="sms",
+                    from_number=normalized_from,
+                    since_ms=since_ms,
+                )
+            except Exception:
+                logger.exception(
+                    "SMSAction.listen_for_response: StateStore lookup failed"
+                )
+                return None
+
+            if message:
+                return message
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(self._poll_interval_seconds, remaining))
+
         return None
+
+
+def _normalize_phone(value: str) -> str:
+    """Normalize a phone number for stable matching."""
+    return "".join(ch for ch in value if ch.isdigit() or ch == "+")

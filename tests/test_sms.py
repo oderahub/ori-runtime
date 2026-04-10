@@ -9,6 +9,7 @@ at the module level via monkeypatch so no live credentials are required.
 
 import sys
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -212,3 +213,57 @@ async def test_listen_for_response_does_not_block(monkeypatch):
     await action.listen_for_response("+234000", timeout_seconds=300)
     elapsed = time.monotonic() - start
     assert elapsed < 0.5, f"listen_for_response blocked for {elapsed:.2f}s"
+
+
+# ── webhook ingest + StateStore-backed listener ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ingest_incoming_webhook_persists_message(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store)
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+234 800 000 0000", "text": " YES "}
+    )
+
+    assert ok is True
+    store.store_incoming_message.assert_awaited_once()
+    kwargs = store.store_incoming_message.await_args.kwargs
+    assert kwargs["channel"] == "sms"
+    assert kwargs["from_number"] == "+2348000000000"
+    assert kwargs["message"] == "YES"
+
+
+@pytest.mark.asyncio
+async def test_ingest_incoming_webhook_rejects_invalid_payload(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store)
+    ok = await action.ingest_incoming_webhook({"from": "", "text": ""})
+    assert ok is False
+    assert not store.store_incoming_message.called
+
+
+@pytest.mark.asyncio
+async def test_listen_for_response_reads_from_state_store(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(consume_incoming_message=AsyncMock(return_value="YES"))
+    action = SMSAction(state_store=store)
+
+    reply = await action.listen_for_response("+234 800 000 0000", timeout_seconds=1)
+
+    assert reply == "YES"
+    store.consume_incoming_message.assert_awaited_once()
+    kwargs = store.consume_incoming_message.await_args.kwargs
+    assert kwargs["channel"] == "sms"
+    assert kwargs["from_number"] == "+2348000000000"
+
+
+@pytest.mark.asyncio
+async def test_listen_for_response_returns_none_when_store_missing(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    action = SMSAction(state_store=None)
+    reply = await action.listen_for_response("+2348000000000", timeout_seconds=1)
+    assert reply is None

@@ -82,6 +82,18 @@ CREATE TABLE IF NOT EXISTS skill_state (
     UNIQUE (skill_name, key)
 );
 
+CREATE TABLE IF NOT EXISTS inbound_messages (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel             TEXT    NOT NULL,
+    from_number         TEXT    NOT NULL,
+    message             TEXT    NOT NULL,
+    received_at         INTEGER NOT NULL,
+    consumed_at         INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbound_lookup
+    ON inbound_messages (channel, from_number, received_at, consumed_at);
+
 CREATE TABLE IF NOT EXISTS sensor_history_5min (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sensor_id TEXT NOT NULL,
@@ -476,6 +488,85 @@ class StateStore:
                 }
             )
         return result
+
+    # ─── inbound_messages ─────────────────────────────────────────────────────
+
+    async def store_incoming_message(
+        self,
+        channel: str,
+        from_number: str,
+        message: str,
+        received_at_ms: int | None = None,
+    ) -> None:
+        await self._run(
+            self._store_incoming_message_sync,
+            channel,
+            from_number,
+            message,
+            received_at_ms if received_at_ms is not None else _now_ms(),
+        )
+
+    def _store_incoming_message_sync(
+        self,
+        channel: str,
+        from_number: str,
+        message: str,
+        received_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO inbound_messages
+                (channel, from_number, message, received_at, consumed_at)
+            VALUES (?, ?, ?, ?, NULL)
+            """,
+            (channel, from_number, message, received_at_ms),
+        )
+        self._conn.commit()
+
+    async def consume_incoming_message(
+        self,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> Optional[str]:
+        return await self._run(
+            self._consume_incoming_message_sync, channel, from_number, since_ms
+        )
+
+    def _consume_incoming_message_sync(
+        self,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> Optional[str]:
+        assert self._conn is not None
+        row = self._conn.execute(
+            """
+            SELECT id, message
+            FROM inbound_messages
+            WHERE channel = ?
+              AND from_number = ?
+              AND received_at >= ?
+              AND consumed_at IS NULL
+            ORDER BY received_at ASC, id ASC
+            LIMIT 1
+            """,
+            (channel, from_number, since_ms),
+        ).fetchone()
+        if row is None:
+            return None
+
+        self._conn.execute(
+            """
+            UPDATE inbound_messages
+            SET consumed_at = ?
+            WHERE id = ? AND consumed_at IS NULL
+            """,
+            (_now_ms(), row["id"]),
+        )
+        self._conn.commit()
+        return str(row["message"])
 
     # ─── reasoning_log ───────────────────────────────────────────────────────
 
