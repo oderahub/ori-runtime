@@ -29,6 +29,7 @@ dependencies = [
     "paho-mqtt>=2.0",
     "psutil>=5.9",
     "pyserial>=3.5",
+    "asyncua>=1.1",
     "aiofiles>=23.0",
     "twilio>=9.0",
     "africastalking>=1.0",
