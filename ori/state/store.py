@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import sqlite3
+import threading
 from functools import partial
 from typing import Optional
 
@@ -158,6 +159,9 @@ class StateStore:
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._write_lock = asyncio.Lock()
+        self._read_local = threading.local()
+        self._read_conns: set[sqlite3.Connection] = set()
+        self._read_conns_lock = threading.Lock()
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -174,10 +178,24 @@ class StateStore:
         self._migrate_sync()
 
     async def close(self) -> None:
-        if self._conn is not None:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conn.close)
-            self._conn = None
+        if self._conn is None:
+            return
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._close_sync)
+        self._conn = None
+
+    def _close_sync(self) -> None:
+        assert self._conn is not None
+        with self._read_conns_lock:
+            read_conns = list(self._read_conns)
+            self._read_conns.clear()
+        for conn in read_conns:
+            try:
+                conn.close()
+            except Exception:
+                continue
+        self._conn.close()
 
     def _migrate_sync(self) -> None:
         assert self._conn is not None
@@ -216,6 +234,27 @@ class StateStore:
         """Run a synchronous read callable in the executor without write lock."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(fn, *args))
+
+    def _get_read_conn(self) -> sqlite3.Connection:
+        """Get a thread-local SQLite connection for read-only operations."""
+        if self._db_path == ":memory:":
+            assert self._conn is not None
+            return self._conn
+
+        conn = getattr(self._read_local, "conn", None)
+        if conn is not None:
+            return conn
+
+        # Read connections are isolated per executor thread to avoid
+        # cross-thread connection reuse issues under concurrent reads.
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        self._read_local.conn = conn
+        with self._read_conns_lock:
+            self._read_conns.add(conn)
+        return conn
 
     async def _run(self, fn, *args):
         """Backward-compatible wrapper for legacy callers/tests."""
@@ -335,8 +374,8 @@ class StateStore:
         return await self._run_read(self._get_history_sync, sensor_id, limit)
 
     def _get_history_sync(self, sensor_id: str, limit: int) -> list[SensorReading]:
-        assert self._conn is not None
-        rows = self._conn.execute(
+        conn = self._get_read_conn()
+        rows = conn.execute(
             """
             SELECT sensor_id, sensor_type, value, unit, timestamp, quality, metadata
             FROM sensor_history
@@ -364,8 +403,8 @@ class StateStore:
         return await self._run_read(self._avg_last_n_sync, sensor_id, n)
 
     def _avg_last_n_sync(self, sensor_id: str, n: int) -> Optional[float]:
-        assert self._conn is not None
-        row = self._conn.execute(
+        conn = self._get_read_conn()
+        row = conn.execute(
             """
             SELECT AVG(value) AS avg_val
             FROM (
@@ -385,11 +424,11 @@ class StateStore:
         return await self._run_read(self._avg_last_hours_sync, sensor_id, hours)
 
     def _avg_last_hours_sync(self, sensor_id: str, hours: int) -> Optional[float]:
-        assert self._conn is not None
+        conn = self._get_read_conn()
         cutoff_ms = _now_ms() - hours * 3_600_000
 
         # Weighted average across all tiers to seamlessly span compaction boundaries
-        row = self._conn.execute(
+        row = conn.execute(
             """
             SELECT SUM(val * cnt) / SUM(cnt) AS avg_val
             FROM (
@@ -433,7 +472,7 @@ class StateStore:
     def _get_timeseries_sync(
         self, sensor_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:
-        assert self._conn is not None
+        conn = self._get_read_conn()
         duration_ms = end_ms - start_ms
 
         # Choose tier based on requested range
@@ -446,7 +485,7 @@ class StateStore:
         else:
             table, time_col, val_col = "sensor_history_daily", "bucket_ms", "avg_value"
 
-        rows = self._conn.execute(
+        rows = conn.execute(
             f"""
             SELECT {time_col} AS ts, {val_col} AS val
             FROM {table}
@@ -491,8 +530,8 @@ class StateStore:
         return await self._run_read(self._get_action_log_sync, limit)
 
     def _get_action_log_sync(self, limit: int) -> list[dict]:
-        assert self._conn is not None
-        rows = self._conn.execute(
+        conn = self._get_read_conn()
+        rows = conn.execute(
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, trigger_name, timestamp
@@ -831,8 +870,8 @@ class StateStore:
         return await self._run_read(self._lookup_rejection_sync, pattern_key)
 
     def _lookup_rejection_sync(self, pattern_key: str) -> Optional[dict]:
-        assert self._conn is not None
-        row = self._conn.execute(
+        conn = self._get_read_conn()
+        row = conn.execute(
             """
             SELECT id, pattern_key, trigger_name, proposed_action, operator_response,
                    device_id, sensor_type, value_bucket, time_of_day_hour,
@@ -879,8 +918,8 @@ class StateStore:
         return await self._run_read(self._get_skill_state_sync, skill_name, key)
 
     def _get_skill_state_sync(self, skill_name: str, key: str) -> Optional[str]:
-        assert self._conn is not None
-        row = self._conn.execute(
+        conn = self._get_read_conn()
+        row = conn.execute(
             """
             SELECT value FROM skill_state
             WHERE skill_name = ? AND key = ?
