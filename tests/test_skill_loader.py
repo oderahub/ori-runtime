@@ -325,6 +325,84 @@ class TestValidation:
         with pytest.raises(SkillValidationError, match="missing required field 'name'"):
             loader.load_one(skill_dir)
 
+    def test_empty_trigger_name_raises(self, tmp_path):
+        yaml_content = """\
+            name: bad-trigger
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: "   "
+                condition: "value > 5"
+                action_tier: A
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                bad_trigger: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "bad-trigger"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="missing/empty name"):
+            loader.load_one(skill_dir)
+
+    def test_trigger_name_with_space_raises(self, tmp_path):
+        yaml_content = """\
+            name: bad-trigger
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: "bad trigger"
+                condition: "value > 5"
+                action_tier: A
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                bad trigger: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "bad-trigger-space"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="invalid name format"):
+            loader.load_one(skill_dir)
+
+    def test_duplicate_trigger_names_raise(self, tmp_path):
+        yaml_content = """\
+            name: dup-trigger
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: overcurrent
+                condition: "value > 5"
+                action_tier: A
+              - name: overcurrent
+                condition: "value > 10"
+                action_tier: C
+                safe_default_action: log_to_dashboard
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+                - name: log_to_dashboard
+                  tier: A
+              defaults:
+                overcurrent: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "dup-trigger"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="duplicate trigger name"):
+            loader.load_one(skill_dir)
+
     def test_empty_triggers_raises(self, tmp_path):
         yaml_content = """\
             name: bad

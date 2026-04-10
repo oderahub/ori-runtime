@@ -19,6 +19,7 @@ All I/O (LLM inference, network, GPIO) runs inside the background task.
 import asyncio
 import importlib.util
 import logging
+import re
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -31,6 +32,7 @@ from ori.network.events import OriEvent
 logger = logging.getLogger(__name__)
 
 _VALID_TIERS = frozenset({"A", "B", "C", "D"})
+_TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -425,8 +427,32 @@ class SkillLoader:
             SkillValidationError: On any validation failure.
         """
         triggers: list[Trigger] = []
+        seen_trigger_names: set[str] = set()
         for raw in raw_triggers:
-            name = raw.get("name", "<unnamed>")
+            if not isinstance(raw, dict):
+                raise SkillValidationError(
+                    f"Skill '{skill_name}': each trigger must be a mapping."
+                )
+
+            raw_name = raw.get("name")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' has a trigger with missing/empty name. "
+                    "Trigger names must be non-empty strings."
+                )
+            name = raw_name.strip()
+            if not _TRIGGER_NAME_RE.fullmatch(name):
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' has invalid name format. "
+                    "Use letters, numbers, underscore, and hyphen only."
+                )
+            if name in seen_trigger_names:
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' has duplicate trigger name '{name}'. "
+                    "Trigger names must be unique per skill."
+                )
+            seen_trigger_names.add(name)
+
             action_tier = raw.get("action_tier")
 
             if not action_tier:
