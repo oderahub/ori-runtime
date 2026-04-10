@@ -51,6 +51,16 @@ sensors:
     baud_rate: 9600
     poll_interval_ms: 5000
 
+  # ─── Growatt/Deye inverter via SolarmanV5 (optional) ─────────────────────
+  # Uncomment for installations with a Growatt or Deye WiFi/LAN dongle
+  # - id: inverter-solar-power
+  #   type: growatt_pv_power
+  #   protocol: growatt
+  #   host: "192.168.1.XXX"
+  #   serial: "XXXXXXXXXX"
+  #   port: 8899
+  #   poll_interval_ms: 5000
+
   # ─── PC/Mac system health (PC-Ori) ──────────────────────────────────────
   # Uncomment to monitor the host machine — no hardware required
   # - id: system-cpu

@@ -551,6 +551,7 @@ _PROTOCOL_MAP: dict[str, type] = {
     "psutil": PsutilAdapter,
     "i2c": None,  # populated lazily to avoid importing hardware libs at module load
     "serial": None,
+    "growatt": None,
 }
 
 
@@ -575,6 +576,10 @@ def _make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.i2c_adapter import I2CAdapter
 
         return I2CAdapter()
+    if protocol == "growatt":
+        from ori.hal.growatt_adapter import GrowattAdapter
+
+        return GrowattAdapter()
     # serial
     from ori.hal.serial_adapter import SerialAdapter
 
