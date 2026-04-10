@@ -245,6 +245,7 @@ class OriRuntime:
 
         # ── Step E: EventBus ──────────────────────────────────────────────────
         event_bus = EventBus()
+        elevator.attach_event_bus(event_bus)
 
         # ── Step F: Load skills and register handlers ─────────────────────────
         skills_dir: str = config.raw.get(

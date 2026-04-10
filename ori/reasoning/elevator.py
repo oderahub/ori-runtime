@@ -20,6 +20,7 @@ import datetime
 import logging
 import socket
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -141,6 +142,12 @@ class IntelligenceElevator:
         self._local_llm = local_llm
         self._rule_engine = rule_engine or RuleEngine()
         self._config = config  # ReasoningConfig from ori.yaml; None in test environments
+        self._event_bus: Any = None
+        self._last_power_mode: str = "normal"
+
+    def attach_event_bus(self, event_bus: Any) -> None:
+        """Attach EventBus for synthetic runtime alerts emitted by the elevator."""
+        self._event_bus = event_bus
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -256,6 +263,31 @@ class IntelligenceElevator:
            internet available → ``'cloud'`` (future)
            fallback → ``'local_slm'``
         """
+        # Energy-aware throttle: cap to rule-only under low battery to preserve
+        # power for safety actions. Tier D remains guaranteed by rule execution
+        # in the reasoning path.
+        energy_cfg = self._energy_aware_cfg()
+        if bool(energy_cfg.get("enabled", False)):
+            battery_pct = await self._get_battery_percent(state_store)
+            if battery_pct is not None:
+                critical = float(energy_cfg.get("critical_threshold_percent", 10))
+                throttle = float(energy_cfg.get("throttle_threshold_percent", 20))
+                if battery_pct < critical:
+                    if self._last_power_mode != "critical":
+                        await self._emit_power_alert(
+                            battery_pct=battery_pct, level="critical", event=event
+                        )
+                    self._last_power_mode = "critical"
+                    return "rule"
+                if battery_pct < throttle:
+                    if self._last_power_mode != "low":
+                        await self._emit_power_alert(
+                            battery_pct=battery_pct, level="low", event=event
+                        )
+                    self._last_power_mode = "low"
+                    return "rule"
+                self._last_power_mode = "normal"
+
         rule_result, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
 
         # Tier D is always handled by the rule engine — return immediately
@@ -302,6 +334,93 @@ class IntelligenceElevator:
 
         # Future: return "cloud" if complexity >= threshold and internet available
         return "local_slm"
+
+    def _energy_aware_cfg(self) -> dict[str, Any]:
+        """Return energy-aware throttle config from either dataclass or dict."""
+        cfg = self._config
+        if cfg is None:
+            return {}
+        if isinstance(cfg, dict):
+            raw = cfg.get("energy_aware_reasoning") or {}
+            return raw if isinstance(raw, dict) else {}
+        raw = getattr(cfg, "energy_aware_reasoning", {}) or {}
+        return raw if isinstance(raw, dict) else {}
+
+    async def _get_battery_percent(self, state_store: Any) -> float | None:
+        """Read latest battery percentage from configured history sensor."""
+        cfg = self._energy_aware_cfg()
+        battery_sensor_id = str(cfg.get("battery_sensor_id", "")).strip()
+        if not battery_sensor_id:
+            return None
+        if state_store is None or not hasattr(state_store, "get_history"):
+            return None
+        try:
+            rows = await state_store.get_history(battery_sensor_id, limit=1)
+        except Exception:
+            logger.debug(
+                "IntelligenceElevator: failed to read battery history for %s",
+                battery_sensor_id,
+            )
+            return None
+
+        if not rows:
+            return None
+        latest = rows[0]
+        raw_value: Any
+        if hasattr(latest, "value"):
+            raw_value = latest.value
+        elif isinstance(latest, dict):
+            raw_value = latest.get("value")
+        else:
+            return None
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            return None
+
+    async def _emit_power_alert(
+        self, battery_pct: float, level: str, event: OriEvent
+    ) -> None:
+        """Publish one low-power alert per threshold crossing."""
+        cfg = self._energy_aware_cfg()
+        if not bool(cfg.get("alert_on_throttle", True)):
+            return
+
+        msg = (
+            "Device in low-power mode — LLM reasoning disabled. "
+            "Safety rules remain active."
+        )
+        logger.warning(
+            "IntelligenceElevator: %s battery throttle active at %.2f%% — %s",
+            level,
+            battery_pct,
+            msg,
+        )
+
+        if self._event_bus is None:
+            return
+
+        alert_event = OriEvent(
+            event_id=str(uuid.uuid4()),
+            event_type="power.low_battery_throttle",
+            device_id=event.device_id,
+            sensor_id=event.sensor_id,
+            timestamp=_now_ms(),
+            reading=None,
+            context={
+                "message": msg,
+                "level": level,
+                "battery_percent": battery_pct,
+                "action_tier": "A",
+            },
+            source="elevator",
+        )
+        try:
+            await self._event_bus.publish(alert_event)
+        except Exception:
+            logger.exception(
+                "IntelligenceElevator: failed to publish low-power alert event"
+            )
 
     async def reason_and_dispatch(
         self,
