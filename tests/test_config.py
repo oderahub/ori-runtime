@@ -384,6 +384,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "victron"
 
+    def test_accepts_opcua_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: plc-temperature\n    type: temperature\n    protocol: opcua\n    poll_interval_ms: 1000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "opcua"
+
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
 
