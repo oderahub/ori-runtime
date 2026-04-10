@@ -112,6 +112,8 @@ reasoning:
     critical_threshold_percent: 10
     battery_sensor_id: inverter-battery
     alert_on_throttle: true
+  causal_memory:
+    rejection_expiry_days: 30      # 0 = never expire
 
 
 gateway:

@@ -532,6 +532,34 @@ class TestReasoningConfig:
         assert ear["enabled"] is True
         assert ear["battery_sensor_id"] == "inverter-battery"
 
+    def test_causal_memory_parsed(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+              causal_memory:
+                rejection_expiry_days: 30
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        cm = cfg.reasoning.causal_memory
+        assert cm["rejection_expiry_days"] == 30
+
 
 # ─── ActionChannelConfig validation ───────────────────────────────────────────
 

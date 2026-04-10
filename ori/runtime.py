@@ -170,6 +170,12 @@ class OriRuntime:
 
         primary_alert_channel = config.actions.primary_alert_channel
         alert_sender = sms_action if primary_alert_channel == "sms" else whatsapp_action
+        causal_cfg = (
+            config.reasoning.causal_memory
+            if isinstance(config.reasoning.causal_memory, dict)
+            else {}
+        )
+        rejection_expiry_days = int(causal_cfg.get("rejection_expiry_days", 30))
 
         dispatcher = ActionDispatcher(
             state_store=self._state_store,
@@ -182,6 +188,7 @@ class OriRuntime:
                 "device_timezone": config.device.timezone,
                 "log_action_decisions": config.logging.log_action_decisions,
                 "log_approval_workflow": config.logging.log_approval_workflow,
+                "rejection_expiry_days": rejection_expiry_days,
             },
         )
         self._dispatcher = dispatcher

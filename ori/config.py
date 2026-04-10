@@ -64,6 +64,7 @@ class ReasoningConfig:
     offline_fallback: str
     escalation_threshold: float = 0.70
     energy_aware_reasoning: dict = field(default_factory=dict)
+    causal_memory: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -349,6 +350,11 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         raise ConfigValidationError(
             "'reasoning.energy_aware_reasoning' must be a mapping when provided."
         )
+    causal_memory = data.get("causal_memory") or {}
+    if not isinstance(causal_memory, dict):
+        raise ConfigValidationError(
+            "'reasoning.causal_memory' must be a mapping when provided."
+        )
 
     return ReasoningConfig(
         default_tier=str(data.get("default_tier", "local")),
@@ -357,6 +363,7 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         offline_fallback=str(data.get("offline_fallback", "rule")),
         escalation_threshold=float(data.get("escalation_threshold", 0.70)),
         energy_aware_reasoning=energy_aware,
+        causal_memory=causal_memory,
     )
 
 
