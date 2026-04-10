@@ -28,7 +28,7 @@ from ori.actions.sms import SMSAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.hal.base import AdapterReadError, BaseAdapter
-from ori.hal.psutil_adapter import PsutilAdapter
+from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent
 from ori.network.sms_webhook import SMSWebhookServer
@@ -279,7 +279,10 @@ class OriRuntime:
 
         # ── Start background tasks ────────────────────────────────────────────
         for sensor_cfg in config.sensors:
-            adapter = _make_adapter(sensor_cfg.protocol)
+            try:
+                adapter = make_adapter(sensor_cfg.protocol)
+            except UnknownProtocolError as exc:
+                raise ConfigValidationError(str(exc)) from exc
             connect_cfg = {
                 "sensor_id": sensor_cfg.id,
                 "sensor_type": sensor_cfg.type,
@@ -545,45 +548,6 @@ class OriRuntime:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-_PROTOCOL_MAP: dict[str, type] = {
-    "psutil": PsutilAdapter,
-    "i2c": None,  # populated lazily to avoid importing hardware libs at module load
-    "serial": None,
-    "growatt": None,
-}
-
-
-def _make_adapter(protocol: str) -> BaseAdapter:
-    """Instantiate the correct HAL adapter for *protocol*.
-
-    Raises:
-        :exc:`~ori.config.ConfigValidationError`: For any protocol not in
-            ``_PROTOCOL_MAP``.  Fail loudly at startup — a device that refuses
-            to start with a clear error is safer than one that silently monitors
-            the wrong sensor.
-    """
-    if protocol not in _PROTOCOL_MAP:
-        raise ConfigValidationError(
-            f"Unknown sensor protocol '{protocol}'. "
-            f"Supported: {sorted(_PROTOCOL_MAP.keys())}. "
-            f"Check ori.yaml sensors configuration."
-        )
-    if protocol == "psutil":
-        return PsutilAdapter()
-    if protocol == "i2c":
-        from ori.hal.i2c_adapter import I2CAdapter
-
-        return I2CAdapter()
-    if protocol == "growatt":
-        from ori.hal.growatt_adapter import GrowattAdapter
-
-        return GrowattAdapter()
-    # serial
-    from ori.hal.serial_adapter import SerialAdapter
-
-    return SerialAdapter()
 
 
 def _message_from_context(ctx: SkillContext, fallback: str) -> str:

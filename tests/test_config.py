@@ -279,6 +279,26 @@ actions:
         with pytest.raises(ConfigValidationError, match="type"):
             Config.load(yaml_path)
 
+    def test_rejects_unknown_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: s1\n    type: voltage\n    protocol: unknown_proto\n    poll_interval_ms: 1000"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="unknown protocol"):
+            Config.load(yaml_path)
+
+    def test_accepts_growatt_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: inverter-battery\n    type: growatt_battery_soc\n    protocol: growatt\n    poll_interval_ms: 5000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "growatt"
+
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
 

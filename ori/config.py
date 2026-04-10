@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
+
 logger = logging.getLogger(__name__)
 
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
@@ -246,12 +248,18 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
             raise ConfigValidationError(f"sensors[{i}] must be a mapping.")
 
         sensor_id = _require_str(item, "id", f"sensors[{i}]")
+        protocol = _require_str(item, "protocol", f"sensors[{i}]")
         poll_ms = int(item.get("poll_interval_ms", 1000))
 
         if not (100 <= poll_ms <= 60_000):
             raise ConfigValidationError(
                 f"sensors[{i}] (id={sensor_id!r}): poll_interval_ms must be "
                 f"100–60000, got {poll_ms}."
+            )
+        if protocol not in SUPPORTED_SENSOR_PROTOCOLS:
+            raise ConfigValidationError(
+                f"sensors[{i}] (id={sensor_id!r}): unknown protocol {protocol!r}. "
+                f"Supported protocols: {sorted(SUPPORTED_SENSOR_PROTOCOLS)}."
             )
 
         # Fields not in the first-class set go into metadata
@@ -262,7 +270,7 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
             SensorConfig(
                 id=sensor_id,
                 type=_require_str(item, "type", f"sensors[{i}]"),
-                protocol=_require_str(item, "protocol", f"sensors[{i}]"),
+                protocol=protocol,
                 poll_interval_ms=poll_ms,
                 metadata=metadata,
                 calibration=item.get("calibration") or {},
