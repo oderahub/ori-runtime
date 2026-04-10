@@ -61,6 +61,7 @@ class OriRuntime:
         self._background_tasks: list[asyncio.Task] = []
         self._sms_action: SMSAction | None = None
         self._sms_webhook_server: SMSWebhookServer | None = None
+        self._dispatcher: ActionDispatcher | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -174,6 +175,7 @@ class OriRuntime:
                 "log_approval_workflow": config.logging.log_approval_workflow,
             },
         )
+        self._dispatcher = dispatcher
 
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> None:
@@ -330,12 +332,21 @@ class OriRuntime:
         logger.info("[runtime] shutdown initiated")
         self._shutdown_event.set()
 
-        # 1. Drain in-flight Tier D tasks before cancelling anything else
-        tier_d_tasks = [
-            t
-            for t in asyncio.all_tasks()
-            if getattr(t, "_is_tier_d", False) and not t.done()
-        ]
+        # 1. Drain in-flight Tier D tasks before cancelling anything else.
+        tier_d_tasks: list[asyncio.Task] = []
+        if self._dispatcher is not None and hasattr(
+            self._dispatcher, "get_inflight_tier_d_tasks"
+        ):
+            tier_d_tasks.extend(self._dispatcher.get_inflight_tier_d_tasks())
+
+        # Backward-compatible fallback: if any legacy Tier D task tags exist,
+        # still honour them during shutdown drain.
+        for task in asyncio.all_tasks():
+            if task.done():
+                continue
+            if getattr(task, "_is_tier_d", False) and task not in tier_d_tasks:
+                tier_d_tasks.append(task)
+
         if tier_d_tasks:
             logger.warning(
                 "[shutdown] waiting up to %.1fs for %d Tier D task(s)",

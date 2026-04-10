@@ -97,6 +97,7 @@ class ActionDispatcher:
         self._log_action_decisions = bool(self._config.get("log_action_decisions", True))
         self._log_approval_workflow = bool(self._config.get("log_approval_workflow", True))
         self._logger_action = LoggerAction()
+        self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[str, Any] = {
             # Built-in fallback for test environments.
             # OriRuntime.start() overwrites this with a closure
@@ -118,6 +119,14 @@ class ActionDispatcher:
             executor: Async callable invoked when the action fires.
         """
         self._executors[action_name] = executor
+
+    def get_inflight_tier_d_tasks(self) -> set[asyncio.Task[Any]]:
+        """Return currently running Tier D execution tasks."""
+        return {task for task in self._inflight_tier_d_tasks if not task.done()}
+
+    def _track_tier_d_task(self, task: asyncio.Task[Any]) -> None:
+        self._inflight_tier_d_tasks.add(task)
+        task.add_done_callback(self._inflight_tier_d_tasks.discard)
 
     async def dispatch(
         self,
@@ -215,18 +224,12 @@ class ActionDispatcher:
 
         try:
             if tier == ActionTier.SAFETY_CRITICAL:
-                outer_task = asyncio.current_task()
-                if outer_task is not None:
-                    outer_task._is_tier_d = True  # type: ignore[attr-defined]
-                # Create the inner task explicitly so we can mark it too.
-                # asyncio.shield() on a coroutine creates an anonymous task
-                # internally; by creating it ourselves we can tag it so the
-                # runtime shutdown drain finds it via asyncio.all_tasks() even
-                # after the outer task has been cancelled.
-                inner_task = asyncio.ensure_future(
+                # Track Tier D work explicitly so runtime shutdown can drain it
+                # without relying on fragile task attribute mutation.
+                inner_task = asyncio.create_task(
                     self._execute_immediately(action, tier, context)
                 )
-                inner_task._is_tier_d = True  # type: ignore[attr-defined]
+                self._track_tier_d_task(inner_task)
                 action_result = await asyncio.shield(inner_task)
 
             elif tier == ActionTier.INFORMATIONAL:

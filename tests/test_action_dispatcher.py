@@ -215,26 +215,33 @@ class TestTierD:
             )
         mock_wf.assert_not_awaited()
 
-    async def test_tier_d_task_is_marked_is_tier_d(self):
-        """The task wrapping a Tier D dispatch must have _is_tier_d=True set
-        so the runtime shutdown drain can identify and await it."""
-        marked: list[bool] = []
+    async def test_tier_d_tasks_are_tracked_without_task_attribute_hacks(self):
+        running_flags: list[bool] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
 
         async def _capturing_executor(action, context):
-            task = asyncio.current_task()
-            marked.append(getattr(task, "_is_tier_d", False))
+            running_flags.append(
+                asyncio.current_task() in d.get_inflight_tier_d_tasks()
+            )
+            started.set()
+            await release.wait()
 
         d = ActionDispatcher()
         d.register_executor("emergency_cutoff", _capturing_executor)
 
-        task = asyncio.create_task(
+        dispatch_task = asyncio.create_task(
             d.dispatch(
                 "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
         )
-        await task
+        await started.wait()
+        assert running_flags == [True]
+        assert len(d.get_inflight_tier_d_tasks()) == 1
 
-        assert marked == [True]
+        release.set()
+        await dispatch_task
+        assert d.get_inflight_tier_d_tasks() == set()
 
     async def test_executor_failure_logs_critical_and_calls_emergency_sms(self):
         """When a Tier D executor raises, logger.critical fires and

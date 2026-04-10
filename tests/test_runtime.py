@@ -286,7 +286,7 @@ class TestStartupLogs:
 
 class TestShutdown:
     async def test_shutdown_drains_tier_d_tasks(self, minimal_config, monkeypatch):
-        """A Tier D task marked with _is_tier_d=True must complete before cancellation."""
+        """Runtime must await dispatcher-tracked Tier D tasks before shutdown."""
         _patch_external(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
         completed: list[bool] = []
@@ -297,9 +297,13 @@ class TestShutdown:
 
         async def _inject_and_stop():
             await asyncio.sleep(0.05)
-            # Create a mock Tier D task and mark it
             tier_d_task = asyncio.create_task(_tier_d_work())
-            tier_d_task._is_tier_d = True  # type: ignore[attr-defined]
+
+            class _FakeDispatcher:
+                def get_inflight_tier_d_tasks(self):
+                    return {tier_d_task} if not tier_d_task.done() else set()
+
+            runtime._dispatcher = _FakeDispatcher()
             await runtime.stop()
             # Give the drained task time to finish
             await asyncio.sleep(0.25)
