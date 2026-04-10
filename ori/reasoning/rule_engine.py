@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # The ONLY object whose attributes may be accessed inside a condition.
 _ALLOWED_ATTRIBUTE_ROOTS = frozenset({"history"})
+_ALLOWED_HISTORY_METHODS = frozenset({"avg_24h", "last_n"})
+_MAX_LAST_N = 1000
 
 # AST node types that are unconditionally safe in condition expressions.
 _SAFE_NODE_TYPES: frozenset[type] = frozenset(
@@ -115,29 +117,62 @@ class EvalContext:
 
 
 def _extract_history_calls(condition: str) -> list[tuple[str, list[Any]]]:
-    """Parse condition AST and return required history helper calls.
+    """Parse condition AST and return validated history helper calls.
 
-    Returns a list of tuples like [('last_n', ['temp', 5]), ('avg_24h', ['power'])]
+    Raises RuleEngineSafetyError for unsupported history helpers or invalid args.
     """
-    import ast
+    calls: list[tuple[str, list[Any]]] = []
+    tree = ast.parse(condition, mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or not isinstance(
+            node.func.value, ast.Name
+        ):
+            continue
+        if node.func.value.id != "history":
+            continue
 
-    calls = []
-    try:
-        tree = ast.parse(condition, mode="eval")
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute) and isinstance(
-                    node.func.value, ast.Name
-                ):
-                    if node.func.value.id == "history":
-                        method = node.func.attr
-                        try:
-                            args = [ast.literal_eval(arg) for arg in node.args]
-                            calls.append((method, args))
-                        except Exception:
-                            pass
-    except Exception:
-        pass
+        method = node.func.attr
+        if method not in _ALLOWED_HISTORY_METHODS:
+            raise RuleEngineSafetyError(
+                f"Rule condition uses unsupported history helper "
+                f"{method!r}: {condition!r}"
+            )
+        if node.keywords:
+            raise RuleEngineSafetyError(
+                f"Rule condition uses keyword args in history helper call: "
+                f"{condition!r}"
+            )
+
+        args: list[Any] = []
+        for arg in node.args:
+            try:
+                args.append(ast.literal_eval(arg))
+            except Exception as exc:
+                raise RuleEngineSafetyError(
+                    f"Rule condition history helper args must be literals: "
+                    f"{condition!r}"
+                ) from exc
+
+        if method == "avg_24h":
+            if len(args) != 1 or not isinstance(args[0], str) or not args[0].strip():
+                raise RuleEngineSafetyError(
+                    "history.avg_24h requires exactly one non-empty string "
+                    f"sensor_id argument: {condition!r}"
+                )
+        elif method == "last_n":
+            if len(args) != 2 or not isinstance(args[0], str) or not args[0].strip():
+                raise RuleEngineSafetyError(
+                    "history.last_n requires sensor_id as first string argument: "
+                    f"{condition!r}"
+                )
+            if not isinstance(args[1], int) or args[1] < 1 or args[1] > _MAX_LAST_N:
+                raise RuleEngineSafetyError(
+                    f"history.last_n count must be 1..{_MAX_LAST_N}: {condition!r}"
+                )
+
+        calls.append((method, args))
     return calls
 
 
@@ -299,37 +334,44 @@ class RuleEngine:
 
         # Pre-fetch history if needed to safely inject into synchronous eval.
         history_cache: dict[tuple, Any] = {}
-        if state_store is not None:
-            for rule in rules:
-                condition = rule.get("condition", "")
-                if condition:
-                    _check_safety_ast(condition)
-                    for method, args in _extract_history_calls(condition):
-                        if method == "avg_24h" and len(args) == 1:
-                            key = ("avg_24h", args[0])
-                            if key not in history_cache:
-                                try:
-                                    val = await state_store.avg_last_hours(args[0], 24)
-                                    history_cache[key] = val if val is not None else 0.0
-                                except Exception:
-                                    history_cache[key] = 0.0
-                        elif method == "last_n" and len(args) == 2:
-                            key = ("last_n", args[0], args[1])
-                            if key not in history_cache:
-                                try:
-                                    readings = await state_store.get_history(
-                                        args[0], limit=args[1]
-                                    )
-                                    history_cache[key] = (
-                                        [r.value for r in readings] if readings else []
-                                    )
-                                except Exception:
-                                    history_cache[key] = []
-        else:
-            for rule in rules:
-                condition = rule.get("condition", "")
-                if condition:
-                    _check_safety_ast(condition)
+        for rule in rules:
+            condition = rule.get("condition", "")
+            if not condition:
+                continue
+            _check_safety_ast(condition)
+            history_calls = _extract_history_calls(condition)
+            if state_store is None:
+                continue
+            for method, args in history_calls:
+                if method == "avg_24h":
+                    key = ("avg_24h", args[0])
+                    if key in history_cache:
+                        continue
+                    try:
+                        val = await state_store.avg_last_hours(args[0], 24)
+                        history_cache[key] = val if val is not None else 0.0
+                    except Exception:
+                        history_cache[key] = 0.0
+                        logger.warning(
+                            "RuleEngine: history prefetch failed for avg_24h(%r); "
+                            "using 0.0",
+                            args[0],
+                        )
+                elif method == "last_n":
+                    key = ("last_n", args[0], args[1])
+                    if key in history_cache:
+                        continue
+                    try:
+                        readings = await state_store.get_history(args[0], limit=args[1])
+                        history_cache[key] = [r.value for r in readings] if readings else []
+                    except Exception:
+                        history_cache[key] = []
+                        logger.warning(
+                            "RuleEngine: history prefetch failed for last_n(%r, %d); "
+                            "using []",
+                            args[0],
+                            args[1],
+                        )
 
         eval_ctx = EvalContext(base_ctx, history_cache)
         namespace = eval_ctx.as_dict()

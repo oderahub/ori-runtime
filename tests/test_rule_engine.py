@@ -13,6 +13,7 @@ from ori.reasoning.rule_engine import (
     RuleEngineSafetyError,
     RuleResult,
     _check_safety_ast,
+    _extract_history_calls,
     _validate_sensor_value,
 )
 
@@ -849,3 +850,26 @@ class TestAstValidationIntegration:
             context={"rated_capacity": 10.0},
         )
         assert result.matched is True
+
+
+class TestHistoryHelperValidation:
+    def test_extract_history_calls_rejects_unsupported_helper(self):
+        with pytest.raises(RuleEngineSafetyError, match="unsupported history helper"):
+            _extract_history_calls("value > history.anything('sensor')")
+
+    def test_extract_history_calls_rejects_non_literal_args(self):
+        with pytest.raises(RuleEngineSafetyError, match="must be literals"):
+            _extract_history_calls("value > history.avg_24h(sensor_id)")
+
+    def test_extract_history_calls_rejects_invalid_last_n_range(self):
+        with pytest.raises(RuleEngineSafetyError, match="1..1000"):
+            _extract_history_calls("value > history.last_n('sensor', 0)")
+
+    @pytest.mark.asyncio
+    async def test_evaluate_rejects_invalid_history_helper_usage(self):
+        engine = RuleEngine()
+        with pytest.raises(RuleEngineSafetyError, match="unsupported history helper"):
+            await engine.evaluate(
+                _event(value=10.0),
+                [_rule(condition="value > history.invalid('sensor')")],
+            )
