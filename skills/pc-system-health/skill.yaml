@@ -26,7 +26,7 @@ sensors_required:
     protocol: psutil
   - type: battery_drain_rate
     protocol: psutil
-  - type: sleep_blocking_processes
+  - type: sleep_blocking_process
     protocol: psutil
 
 triggers:
@@ -68,10 +68,21 @@ triggers:
 
   # ── Tier A: Processes blocking sleep ──────────────────────────────────
   - name: sleep_blocked
-    condition: "sleep_blocking_processes > 0"
+    condition: "sensor_type == 'sleep_blocking_process' and value > 0"
     cooldown_seconds: 1800
     escalate_to: local_slm
     action_tier: A
+
+  # ── Tier C: Optional operator-approved process termination ─────────────
+  # Fires only when sleep is blocked and a single process target can be
+  # resolved from event metadata/context.
+  - name: sleep_blocked_terminate_candidate
+    condition: "sensor_type == 'sleep_blocking_process' and value > 0"
+    cooldown_seconds: 1800
+    escalate_to: rule
+    action_tier: C
+    approval_timeout_seconds: 300
+    safe_default_action: log_to_dashboard
 
   # ── Tier D: CPU overheating — safety critical ─────────────────────────
   - name: cpu_overheating
@@ -143,6 +154,8 @@ actions:
       tier: A
     - name: log_to_dashboard
       tier: A
+    - name: terminate_process
+      tier: C
 
   defaults:
     high_cpu: [log_to_dashboard]
@@ -151,6 +164,7 @@ actions:
     abnormal_disk_writes: [alert_whatsapp, log_to_dashboard]
     excessive_sleep_drain: [alert_whatsapp, log_to_dashboard]
     sleep_blocked: [alert_whatsapp, log_to_dashboard]
+    sleep_blocked_terminate_candidate: [terminate_process]
     cpu_overheating: [alert_whatsapp, log_to_dashboard]
 
 requirements:

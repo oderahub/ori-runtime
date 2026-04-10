@@ -470,7 +470,10 @@ class PsutilAdapter(BaseAdapter):
             unit="count",
             timestamp=_now_ms(),
             quality=quality,
-            metadata={"processes": processes},
+            metadata={
+                "processes": processes,
+                "recommended_process": processes[0] if processes else None,
+            },
         )
 
     async def _pmset_assertions_async(self) -> tuple[list[dict], float]:
