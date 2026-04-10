@@ -173,6 +173,21 @@ class Config:
                         f"Set it in your .env file before starting Ori."
                     )
 
+            incoming = actions.sms.get("incoming_webhook") or {}
+            if isinstance(incoming, dict):
+                webhook_enabled = (
+                    str(incoming.get("enabled", "")).lower() == "true"
+                    or incoming.get("enabled") is True
+                )
+                if webhook_enabled:
+                    token = str(incoming.get("token", ""))
+                    if not token or "${" in token:
+                        resolved_value = incoming.get("token", "")
+                        raise ConfigValidationError(
+                            f"Environment variable not set: {resolved_value}. "
+                            f"Set it in your .env file before starting Ori."
+                        )
+
         return cls(
             device=device,
             sensors=sensors,

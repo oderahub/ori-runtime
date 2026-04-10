@@ -649,3 +649,37 @@ actions:
         with caplog.at_level(logging.WARNING):
             Config.load(yaml_path)
             assert "actions.operator_contact is missing" in caplog.text
+
+    def test_sms_incoming_webhook_missing_token_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: '${ORI_SMS_WEBHOOK_TOKEN}'\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="ORI_SMS_WEBHOOK_TOKEN"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_token_set_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["incoming_webhook"]["token"] == "super-secret-token"
