@@ -157,7 +157,7 @@ class StateStore:
     def __init__(self, db_path: str = "ori_state.db") -> None:
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
-        self._lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -206,11 +206,20 @@ class StateStore:
                 return
             raise
 
-    async def _run(self, fn, *args):
-        """Run a synchronous callable in the executor, serialised by lock."""
+    async def _run_write(self, fn, *args):
+        """Run a synchronous write callable in the executor under write lock."""
         loop = asyncio.get_running_loop()
-        async with self._lock:
+        async with self._write_lock:
             return await loop.run_in_executor(None, partial(fn, *args))
+
+    async def _run_read(self, fn, *args):
+        """Run a synchronous read callable in the executor without write lock."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(fn, *args))
+
+    async def _run(self, fn, *args):
+        """Backward-compatible wrapper for legacy callers/tests."""
+        return await self._run_write(fn, *args)
 
     # ─── sensor_history ───────────────────────────────────────────────────────
 
@@ -226,7 +235,7 @@ class StateStore:
             "5min": now_ms - (30 * 86400 * 1000),  # 30 days
             "hourly": now_ms - (365 * 86400 * 1000),  # 1 year
         }
-        await self._run(self._compact_sync, cutoffs, now_ms)
+        await self._run_write(self._compact_sync, cutoffs, now_ms)
 
     def _compact_sync(self, cutoffs: dict, now_ms: int) -> None:
         assert self._conn is not None
@@ -298,7 +307,7 @@ class StateStore:
         if event.reading is None:
             return
         r = event.reading
-        await self._run(self._insert_reading_sync, r)
+        await self._run_write(self._insert_reading_sync, r)
 
     def _insert_reading_sync(self, r: SensorReading) -> None:
         assert self._conn is not None
@@ -323,7 +332,7 @@ class StateStore:
     async def get_history(
         self, sensor_id: str, limit: int = 100
     ) -> list[SensorReading]:
-        return await self._run(self._get_history_sync, sensor_id, limit)
+        return await self._run_read(self._get_history_sync, sensor_id, limit)
 
     def _get_history_sync(self, sensor_id: str, limit: int) -> list[SensorReading]:
         assert self._conn is not None
@@ -352,7 +361,7 @@ class StateStore:
 
     async def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
         """Average of the n most-recent readings for a sensor."""
-        return await self._run(self._avg_last_n_sync, sensor_id, n)
+        return await self._run_read(self._avg_last_n_sync, sensor_id, n)
 
     def _avg_last_n_sync(self, sensor_id: str, n: int) -> Optional[float]:
         assert self._conn is not None
@@ -373,7 +382,7 @@ class StateStore:
 
     async def avg_last_hours(self, sensor_id: str, hours: int) -> Optional[float]:
         """Average of all readings within the last *hours* hours."""
-        return await self._run(self._avg_last_hours_sync, sensor_id, hours)
+        return await self._run_read(self._avg_last_hours_sync, sensor_id, hours)
 
     def _avg_last_hours_sync(self, sensor_id: str, hours: int) -> Optional[float]:
         assert self._conn is not None
@@ -419,7 +428,7 @@ class StateStore:
         self, sensor_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:
         """Fetch chart data from the appropriate compaction tier."""
-        return await self._run(self._get_timeseries_sync, sensor_id, start_ms, end_ms)
+        return await self._run_read(self._get_timeseries_sync, sensor_id, start_ms, end_ms)
 
     def _get_timeseries_sync(
         self, sensor_id: str, start_ms: int, end_ms: int
@@ -451,7 +460,7 @@ class StateStore:
     # ─── action_log ───────────────────────────────────────────────────────────
 
     async def log_action(self, result: ActionResult, trigger_name: str) -> None:
-        await self._run(self._log_action_sync, result, trigger_name)
+        await self._run_write(self._log_action_sync, result, trigger_name)
 
     def _log_action_sync(self, result: ActionResult, trigger_name: str) -> None:
         assert self._conn is not None
@@ -479,7 +488,7 @@ class StateStore:
         self._conn.commit()
 
     async def get_action_log(self, limit: int = 50) -> list[dict]:
-        return await self._run(self._get_action_log_sync, limit)
+        return await self._run_read(self._get_action_log_sync, limit)
 
     def _get_action_log_sync(self, limit: int) -> list[dict]:
         assert self._conn is not None
@@ -521,7 +530,7 @@ class StateStore:
         message: str,
         received_at_ms: int | None = None,
     ) -> None:
-        await self._run(
+        await self._run_write(
             self._store_incoming_message_sync,
             channel,
             from_number,
@@ -553,7 +562,7 @@ class StateStore:
         from_number: str,
         since_ms: int,
     ) -> Optional[str]:
-        return await self._run(
+        return await self._run_write(
             self._consume_incoming_message_sync, channel, from_number, since_ms
         )
 
@@ -600,7 +609,7 @@ class StateStore:
         device_id: str,
     ) -> None:
         """Persist a :class:`~ori.network.events.ReasoningResult` to reasoning_log."""
-        await self._run(self._log_reasoning_sync, result, trigger_name, device_id)
+        await self._run_write(self._log_reasoning_sync, result, trigger_name, device_id)
 
     def _log_reasoning_sync(
         self,
@@ -646,7 +655,7 @@ class StateStore:
         device_id: str,
     ) -> None:
         """Persist an operator rejection or autonomous Tier D override."""
-        await self._run(
+        await self._run_write(
             self._log_override_sync,
             trigger_name,
             action,
@@ -688,7 +697,7 @@ class StateStore:
     # ─── causal_memory ────────────────────────────────────────────────────────
 
     async def lookup_causal_memory(self, pattern_key: str) -> Optional[str]:
-        return await self._run(self._lookup_causal_sync, pattern_key)
+        return await self._run_write(self._lookup_causal_sync, pattern_key)
 
     def _lookup_causal_sync(self, pattern_key: str) -> Optional[str]:
         assert self._conn is not None
@@ -715,7 +724,7 @@ class StateStore:
     async def store_causal_memory(
         self, pattern_key: str, resolution: str, confidence: float
     ) -> None:
-        await self._run(self._store_causal_sync, pattern_key, resolution, confidence)
+        await self._run_write(self._store_causal_sync, pattern_key, resolution, confidence)
 
     def _store_causal_sync(
         self, pattern_key: str, resolution: str, confidence: float
@@ -752,7 +761,7 @@ class StateStore:
         day_of_week: int,
         expiry_days: int = 30,
     ) -> None:
-        await self._run(
+        await self._run_write(
             self._store_rejection_sync,
             pattern_key,
             trigger_name,
@@ -819,7 +828,7 @@ class StateStore:
         self._conn.commit()
 
     async def lookup_rejection(self, pattern_key: str) -> Optional[dict]:
-        return await self._run(self._lookup_rejection_sync, pattern_key)
+        return await self._run_read(self._lookup_rejection_sync, pattern_key)
 
     def _lookup_rejection_sync(self, pattern_key: str) -> Optional[dict]:
         assert self._conn is not None
@@ -867,7 +876,7 @@ class StateStore:
     # ─── skill_state ──────────────────────────────────────────────────────────
 
     async def get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
-        return await self._run(self._get_skill_state_sync, skill_name, key)
+        return await self._run_read(self._get_skill_state_sync, skill_name, key)
 
     def _get_skill_state_sync(self, skill_name: str, key: str) -> Optional[str]:
         assert self._conn is not None
@@ -881,7 +890,7 @@ class StateStore:
         return row["value"] if row else None
 
     async def set_skill_state(self, skill_name: str, key: str, value: str) -> None:
-        await self._run(self._set_skill_state_sync, skill_name, key, value)
+        await self._run_write(self._set_skill_state_sync, skill_name, key, value)
 
     def _set_skill_state_sync(self, skill_name: str, key: str, value: str) -> None:
         assert self._conn is not None
