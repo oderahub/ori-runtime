@@ -3,6 +3,7 @@
 
 """Tests for the HardwareCircuitBreaker and its integration with HAL adapters."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -122,6 +123,43 @@ def test_custom_config():
     assert cb.failure_threshold == 3
     assert cb.recovery_timeout_s == 300  # default
     assert cb.success_threshold == 2  # default
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_counts_as_failure():
+    cb = _make({"circuit_breaker": {"failure_threshold": 1}})
+
+    class UnexpectedReadError(Exception):
+        pass
+
+    with pytest.raises(UnexpectedReadError):
+        async with cb:
+            raise UnexpectedReadError("boom")
+
+    assert cb.state == CircuitState.OPEN
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_is_neutral():
+    cb = _make()
+    cb._record_failure()
+    assert cb.failure_count == 1
+
+    with pytest.raises(asyncio.CancelledError):
+        async with cb:
+            raise asyncio.CancelledError()
+
+    assert cb.state == CircuitState.CLOSED
+    assert cb.failure_count == 1
+
+
+def test_open_state_without_opened_at_fails_closed():
+    cb = _make()
+    cb.state = CircuitState.OPEN
+    cb.opened_at = None
+
+    assert cb._allow_read() is False
+    assert cb.opened_at is not None
 
 
 # ── Integration: PsutilAdapter ────────────────────────────────────────────────

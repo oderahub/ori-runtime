@@ -1,6 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import enum
 import logging
 import time
@@ -61,15 +62,21 @@ class HardwareCircuitBreaker:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None and issubclass(exc_type, (AdapterReadError, AdapterTimeoutError)):
+        if exc_type is None:
+            self._record_success()
+            return False
+
+        # Cancellation is an orchestration signal, not a hardware success/failure.
+        if issubclass(exc_type, asyncio.CancelledError):
+            return False
+
+        if issubclass(exc_type, Exception):
             just_tripped = self._record_failure()
             if just_tripped:
                 logger.warning(
                     "%s: circuit breaker tripped — hardware offline",
                     self.adapter_name,
                 )
-        else:
-            self._record_success()
         return False
 
     def _allow_read(self) -> bool:
@@ -77,7 +84,15 @@ class HardwareCircuitBreaker:
             return True
 
         if self.state == CircuitState.OPEN:
-            assert self.opened_at is not None
+            if self.opened_at is None:
+                # Corrupted internal state: fail closed and reset the open timestamp.
+                self.opened_at = time.monotonic()
+                logger.error(
+                    "%s: circuit breaker OPEN with missing opened_at; "
+                    "resetting timer and failing closed",
+                    self.adapter_name,
+                )
+                return False
             elapsed = time.monotonic() - self.opened_at
             if elapsed >= self.recovery_timeout_s:
                 self.state = CircuitState.HALF_OPEN
