@@ -1,0 +1,25 @@
+name: example-skill-template
+version: 0.1.0
+author: your-name
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: current_clamp
+    protocol: i2c
+
+triggers:
+  - name: anomalous_draw
+    condition: "value > 8.0"
+    cooldown_seconds: 300
+    escalate_to: local_slm
+    action_tier: A
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    anomalous_draw: [alert_whatsapp, log_to_dashboard]
