@@ -459,9 +459,19 @@ class ActionDispatcher:
         operator_response: str | None = None
         timed_out = False
         try:
+            listen_coro = self._listen_for_response(
+                from_number=operator_contact,
+                timeout_seconds=approval_timeout_seconds,
+            )
+        except TypeError:
+            # Backward compatibility for older test doubles/overrides that
+            # patched _listen_for_response with a no-arg coroutine.
+            listen_coro = self._listen_for_response()  # type: ignore[call-arg]
+        try:
             operator_response = await asyncio.wait_for(
-                self._listen_for_response(),
-                timeout=float(approval_timeout_seconds),
+                listen_coro,
+                # Keep a small guard margin around provider-side timeout logic.
+                timeout=float(approval_timeout_seconds) + 1.0,
             )
         except asyncio.TimeoutError:
             timed_out = True
@@ -472,6 +482,16 @@ class ActionDispatcher:
                 approval_timeout_seconds,
                 safe_default_action,
             )
+        else:
+            if operator_response is None:
+                timed_out = True
+                logger.warning(
+                    "ActionDispatcher: no approval response for action=%r within %ds — "
+                    "executing safe_default=%r",
+                    action,
+                    approval_timeout_seconds,
+                    safe_default_action,
+                )
 
         # Parse response
         approved = _parse_approval_response(operator_response)
@@ -514,22 +534,38 @@ class ActionDispatcher:
             operator_response=operator_response,
         )
 
-    async def _listen_for_response(self) -> str | None:
-        """Poll the alert inbox for an operator YES/NO reply.
-
-        **Stub** — returns ``None`` (no response) in the PoC.
-        Completed in Step 16 when :mod:`ori.actions.whatsapp` is built;
-        at that point this method will be overridden or injected via
-        ``alert_sender.listen()``.
+    async def _listen_for_response(
+        self, from_number: str, timeout_seconds: int
+    ) -> str | None:
+        """Delegate operator response listening to the configured alert sender.
 
         Returns:
-            Operator's reply text, or ``None`` if no message was received
-            before the caller's ``asyncio.wait_for`` timeout fires.
+            Operator reply text, or ``None`` when no reply is received or
+            when no compatible listener is configured.
         """
-        # PoC: park here and let wait_for timeout handle the no-response path.
-        # Step 16 will replace this with a real inbox poller.
-        await asyncio.sleep(3600)  # effectively never returns before timeout
-        return None  # pragma: no cover
+        if not self._alert_sender or not from_number:
+            return None
+
+        listener = getattr(self._alert_sender, "listen_for_response", None)
+        if listener is None:
+            logger.warning(
+                "ActionDispatcher: alert_sender has no listen_for_response() method"
+            )
+            return None
+
+        try:
+            return await listener(
+                from_number=from_number,
+                timeout_seconds=timeout_seconds,
+            )
+        except TypeError:
+            # Compatibility with listeners that only accept positional args.
+            return await listener(from_number, timeout_seconds)
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed while listening for operator response"
+            )
+            return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
