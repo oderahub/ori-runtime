@@ -1007,6 +1007,12 @@ pyjwt==2.12.1 \
 pyserial==3.5 \
     --hash=sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb \
     --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
+    # via
+    #   -r requirements.in
+    #   umodbus
+pysolarmanv5==3.0.6 \
+    --hash=sha256:9e38e47914c5b8bf44166dd74056040ec041b1d7c44ff2ce94ec192eeae9fc5d \
+    --hash=sha256:ec3c6c03ec47bd0ee811f32ee4da272a28cc53141ab1113b5dbec55834c8afb5
     # via -r requirements.in
 python-dotenv==1.2.2 \
     --hash=sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a \
@@ -1124,6 +1130,10 @@ typing-inspection==0.4.2 \
     --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7 \
     --hash=sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464
     # via pydantic
+umodbus==1.0.4 \
+    --hash=sha256:26bbbeff02d6d8a3e29bb0f9d9044c672d55fc1687afe4297a2f7d68175103a7 \
+    --hash=sha256:aab3e61488d8bef638466687b360192ddf046a23b61a9ba3734b4f48d31efe16
+    # via pysolarmanv5
 urllib3==2.6.3 \
     --hash=sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed \
     --hash=sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4
