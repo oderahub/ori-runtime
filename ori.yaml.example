@@ -87,6 +87,15 @@ sensors:
   #   baud_rate: 9600
   #   poll_interval_ms: 2000
 
+  # ─── Virtual sensor: weather API (optional) ───────────────────────────────
+  # - id: outdoor-temperature
+  #   type: temperature
+  #   protocol: http
+  #   url: "http://api.openweathermap.org/data/2.5/weather?q=Lagos&appid=YOUR_KEY"
+  #   json_path: "main.temp"
+  #   unit: kelvin
+  #   poll_interval_ms: 300000
+
 
 skills:
   - name: energy-anomaly-detector
