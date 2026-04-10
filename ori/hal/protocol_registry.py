@@ -6,7 +6,7 @@
 from ori.hal.base import BaseAdapter
 
 SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
-    {"psutil", "i2c", "serial", "growatt", "usb_serial", "http"}
+    {"psutil", "i2c", "serial", "growatt", "victron", "usb_serial", "http"}
 )
 
 
@@ -28,6 +28,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.growatt_adapter import GrowattAdapter
 
         return GrowattAdapter()
+    if protocol == "victron":
+        from ori.hal.victron_adapter import VictronAdapter
+
+        return VictronAdapter()
     if protocol == "serial":
         from ori.hal.serial_adapter import SerialAdapter
 
