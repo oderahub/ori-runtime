@@ -6,7 +6,6 @@ import datetime
 import hashlib
 import json
 import sqlite3
-import threading
 from functools import partial
 from typing import Optional
 
@@ -159,9 +158,6 @@ class StateStore:
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._write_lock = asyncio.Lock()
-        self._read_local = threading.local()
-        self._read_conns: set[sqlite3.Connection] = set()
-        self._read_conns_lock = threading.Lock()
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -178,24 +174,10 @@ class StateStore:
         self._migrate_sync()
 
     async def close(self) -> None:
-        if self._conn is None:
-            return
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._close_sync)
-        self._conn = None
-
-    def _close_sync(self) -> None:
-        assert self._conn is not None
-        with self._read_conns_lock:
-            read_conns = list(self._read_conns)
-            self._read_conns.clear()
-        for conn in read_conns:
-            try:
-                conn.close()
-            except Exception:
-                continue
-        self._conn.close()
+        if self._conn is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._conn.close)
+            self._conn = None
 
     def _migrate_sync(self) -> None:
         assert self._conn is not None
@@ -233,28 +215,27 @@ class StateStore:
     async def _run_read(self, fn, *args):
         """Run a synchronous read callable in the executor without write lock."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, partial(fn, *args))
+        return await loop.run_in_executor(None, partial(self._run_read_with_conn, fn, *args))
 
-    def _get_read_conn(self) -> sqlite3.Connection:
-        """Get a thread-local SQLite connection for read-only operations."""
+    def _run_read_with_conn(self, fn, *args):
+        conn, close_when_done = self._open_read_conn_sync()
+        try:
+            return fn(conn, *args)
+        finally:
+            if close_when_done:
+                conn.close()
+
+    def _open_read_conn_sync(self) -> tuple[sqlite3.Connection, bool]:
+        """Open a short-lived read connection safe for concurrent executor threads."""
         if self._db_path == ":memory:":
             assert self._conn is not None
-            return self._conn
+            return self._conn, False
 
-        conn = getattr(self._read_local, "conn", None)
-        if conn is not None:
-            return conn
-
-        # Read connections are isolated per executor thread to avoid
-        # cross-thread connection reuse issues under concurrent reads.
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
-        self._read_local.conn = conn
-        with self._read_conns_lock:
-            self._read_conns.add(conn)
-        return conn
+        return conn, True
 
     async def _run(self, fn, *args):
         """Backward-compatible wrapper for legacy callers/tests."""
@@ -373,8 +354,9 @@ class StateStore:
     ) -> list[SensorReading]:
         return await self._run_read(self._get_history_sync, sensor_id, limit)
 
-    def _get_history_sync(self, sensor_id: str, limit: int) -> list[SensorReading]:
-        conn = self._get_read_conn()
+    def _get_history_sync(
+        self, conn: sqlite3.Connection, sensor_id: str, limit: int
+    ) -> list[SensorReading]:
         rows = conn.execute(
             """
             SELECT sensor_id, sensor_type, value, unit, timestamp, quality, metadata
@@ -402,8 +384,9 @@ class StateStore:
         """Average of the n most-recent readings for a sensor."""
         return await self._run_read(self._avg_last_n_sync, sensor_id, n)
 
-    def _avg_last_n_sync(self, sensor_id: str, n: int) -> Optional[float]:
-        conn = self._get_read_conn()
+    def _avg_last_n_sync(
+        self, conn: sqlite3.Connection, sensor_id: str, n: int
+    ) -> Optional[float]:
         row = conn.execute(
             """
             SELECT AVG(value) AS avg_val
@@ -423,8 +406,9 @@ class StateStore:
         """Average of all readings within the last *hours* hours."""
         return await self._run_read(self._avg_last_hours_sync, sensor_id, hours)
 
-    def _avg_last_hours_sync(self, sensor_id: str, hours: int) -> Optional[float]:
-        conn = self._get_read_conn()
+    def _avg_last_hours_sync(
+        self, conn: sqlite3.Connection, sensor_id: str, hours: int
+    ) -> Optional[float]:
         cutoff_ms = _now_ms() - hours * 3_600_000
 
         # Weighted average across all tiers to seamlessly span compaction boundaries
@@ -470,9 +454,8 @@ class StateStore:
         return await self._run_read(self._get_timeseries_sync, sensor_id, start_ms, end_ms)
 
     def _get_timeseries_sync(
-        self, sensor_id: str, start_ms: int, end_ms: int
+        self, conn: sqlite3.Connection, sensor_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:
-        conn = self._get_read_conn()
         duration_ms = end_ms - start_ms
 
         # Choose tier based on requested range
@@ -529,8 +512,7 @@ class StateStore:
     async def get_action_log(self, limit: int = 50) -> list[dict]:
         return await self._run_read(self._get_action_log_sync, limit)
 
-    def _get_action_log_sync(self, limit: int) -> list[dict]:
-        conn = self._get_read_conn()
+    def _get_action_log_sync(self, conn: sqlite3.Connection, limit: int) -> list[dict]:
         rows = conn.execute(
             """
             SELECT action_name, tier, executed, approved, action_taken,
@@ -869,8 +851,9 @@ class StateStore:
     async def lookup_rejection(self, pattern_key: str) -> Optional[dict]:
         return await self._run_read(self._lookup_rejection_sync, pattern_key)
 
-    def _lookup_rejection_sync(self, pattern_key: str) -> Optional[dict]:
-        conn = self._get_read_conn()
+    def _lookup_rejection_sync(
+        self, conn: sqlite3.Connection, pattern_key: str
+    ) -> Optional[dict]:
         row = conn.execute(
             """
             SELECT id, pattern_key, trigger_name, proposed_action, operator_response,
@@ -917,8 +900,9 @@ class StateStore:
     async def get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
         return await self._run_read(self._get_skill_state_sync, skill_name, key)
 
-    def _get_skill_state_sync(self, skill_name: str, key: str) -> Optional[str]:
-        conn = self._get_read_conn()
+    def _get_skill_state_sync(
+        self, conn: sqlite3.Connection, skill_name: str, key: str
+    ) -> Optional[str]:
         row = conn.execute(
             """
             SELECT value FROM skill_state
