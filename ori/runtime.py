@@ -25,6 +25,7 @@ from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
 from ori.actions.relay import RelayAction
 from ori.actions.sms import SMSAction
+from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.hal.base import AdapterReadError, BaseAdapter
@@ -127,6 +128,7 @@ class OriRuntime:
         self._sms_action = sms_action
         logger_action = LoggerAction()
         process_manager_action = ProcessManagerAction()
+        system_control_action = SystemControlAction()
 
         relay_action: RelayAction | None = None
         relay_requested = bool(config.actions.relay.get("enabled", False))
@@ -224,6 +226,23 @@ class OriRuntime:
             return ok
 
         dispatcher.register_executor("terminate_process", _exec_terminate_process)
+
+        async def _exec_reset_kernel_subsystem(action: str, ctx: SkillContext) -> bool:
+            subsystem = _kernel_subsystem_from_context(ctx)
+            if not subsystem:
+                logger.warning(
+                    "[runtime] reset_kernel_subsystem requested but no target subsystem was provided"
+                )
+                return False
+            ok = await system_control_action.reset_kernel_subsystem(subsystem=subsystem)
+            if not ok:
+                logger.warning(
+                    "[runtime] reset_kernel_subsystem failed for subsystem=%r",
+                    subsystem,
+                )
+            return ok
+
+        dispatcher.register_executor("reset_kernel_subsystem", _exec_reset_kernel_subsystem)
 
         # log_to_dashboard — override built-in with device_id from config
         async def _exec_log_to_dashboard(action: str, *_: Any) -> None:
@@ -653,6 +672,37 @@ def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
         return valid[0]
 
     return None, ""
+
+
+def _kernel_subsystem_from_context(ctx: SkillContext) -> str:
+    """Resolve subsystem target for `reset_kernel_subsystem`.
+
+    Resolution order:
+    1. Explicit event context override:
+       `event.context["reset_kernel_subsystem"]` as either
+       `{"subsystem": "<name>"}` or `"<name>"`.
+    2. Reading metadata keys: `kernel_subsystem` then `subsystem`.
+    """
+    if not ctx or not ctx.event:
+        return ""
+
+    raw = ctx.event.context.get("reset_kernel_subsystem", "")
+    if isinstance(raw, dict):
+        subsystem = raw.get("subsystem")
+        if isinstance(subsystem, str) and subsystem.strip():
+            return subsystem.strip()
+    elif isinstance(raw, str) and raw.strip():
+        return raw.strip()
+
+    reading = ctx.event.reading
+    if reading is None:
+        return ""
+
+    for key in ("kernel_subsystem", "subsystem"):
+        value = reading.metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
