@@ -69,6 +69,18 @@ sensors:
   #   broker_host: "192.168.1.50"
   #   portal_id: "YOUR_PORTAL_ID"
   #   port: 1883
+  #   # Optional broker auth/TLS (works with Mosquitto and other MQTT brokers)
+  #   mqtt:
+  #     username: "mqtt-user"
+  #     password: "${MQTT_PASSWORD}"
+  #     client_id: "ori-victron-01"
+  #     keepalive: 90
+  #     tls:
+  #       enabled: false
+  #       insecure: false
+  #       # ca_certfile: "/etc/ssl/certs/ca-certificates.crt"
+  #       # certfile: "/path/to/client.crt"
+  #       # keyfile: "/path/to/client.key"
   #   poll_interval_ms: 5000
 
   # ─── PC/Mac system health (PC-Ori) ──────────────────────────────────────
