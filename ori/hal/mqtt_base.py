@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import inspect
 import json
 import logging
+import ssl
 import time
 from typing import Any, Iterable
 
@@ -50,6 +52,134 @@ class MqttCachedAdapter(BaseAdapter):
                 f"{self.adapter_name}: 'aiomqtt' is not installed. Run: pip install aiomqtt"
             )
 
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _build_mqtt_client_kwargs(self, config: dict) -> dict[str, Any]:
+        """Build aiomqtt.Client kwargs from flat and nested mqtt config."""
+        mqtt_cfg = config.get("mqtt")
+        if not isinstance(mqtt_cfg, dict):
+            mqtt_cfg = {}
+
+        def _first(*keys: str) -> Any:
+            for key in keys:
+                if key in config and config.get(key) is not None:
+                    return config.get(key)
+                if key in mqtt_cfg and mqtt_cfg.get(key) is not None:
+                    return mqtt_cfg.get(key)
+            return None
+
+        kwargs: dict[str, Any] = {}
+
+        username = _first("mqtt_username", "username")
+        password = _first("mqtt_password", "password")
+        identifier = _first("mqtt_client_id", "client_id", "identifier")
+        keepalive = _first("mqtt_keepalive_s", "keepalive")
+        clean_session = _first("mqtt_clean_session", "clean_session")
+        transport = _first("mqtt_transport", "transport")
+        timeout = _first("mqtt_timeout_s", "timeout")
+
+        if username not in (None, ""):
+            kwargs["username"] = str(username)
+        if password not in (None, ""):
+            kwargs["password"] = str(password)
+        if identifier not in (None, ""):
+            kwargs["identifier"] = str(identifier)
+        if keepalive not in (None, ""):
+            kwargs["keepalive"] = int(keepalive)
+        if clean_session is not None:
+            kwargs["clean_session"] = self._as_bool(clean_session)
+        if transport not in (None, ""):
+            kwargs["transport"] = str(transport)
+        if timeout not in (None, ""):
+            kwargs["timeout"] = float(timeout)
+
+        tls_cfg = mqtt_cfg.get("tls")
+        if not isinstance(tls_cfg, dict):
+            tls_cfg = {}
+
+        tls_enabled = self._as_bool(
+            _first("mqtt_tls_enabled")
+            if _first("mqtt_tls_enabled") is not None
+            else tls_cfg.get("enabled"),
+            default=False,
+        )
+
+        tls_ca_certfile = _first("mqtt_tls_ca_certfile", "tls_ca_certfile")
+        tls_certfile = _first("mqtt_tls_certfile", "tls_certfile")
+        tls_keyfile = _first("mqtt_tls_keyfile", "tls_keyfile")
+        tls_keyfile_password = _first(
+            "mqtt_tls_keyfile_password", "tls_keyfile_password"
+        )
+        tls_insecure = _first("mqtt_tls_insecure", "tls_insecure")
+        if tls_insecure is None:
+            tls_insecure = tls_cfg.get("insecure")
+
+        needs_tls_context = tls_enabled or any(
+            v not in (None, "")
+            for v in (tls_ca_certfile, tls_certfile, tls_keyfile, tls_keyfile_password)
+        )
+
+        if needs_tls_context:
+            try:
+                context = ssl.create_default_context(
+                    cafile=str(tls_ca_certfile) if tls_ca_certfile else None
+                )
+                if tls_certfile:
+                    context.load_cert_chain(
+                        certfile=str(tls_certfile),
+                        keyfile=str(tls_keyfile) if tls_keyfile else None,
+                        password=(
+                            str(tls_keyfile_password)
+                            if tls_keyfile_password not in (None, "")
+                            else None
+                        ),
+                    )
+                if self._as_bool(tls_insecure, default=False):
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                kwargs["tls_context"] = context
+            except Exception as exc:
+                raise AdapterConnectionError(
+                    f"{self.adapter_name}: invalid MQTT TLS configuration: {exc}"
+                ) from exc
+
+        # Keep compatibility across aiomqtt versions by filtering unknown kwargs.
+        if _aiomqtt is None:
+            return kwargs
+        try:
+            sig = inspect.signature(_aiomqtt.Client)
+        except (TypeError, ValueError):
+            return kwargs
+
+        params = sig.parameters
+        accepts_kwargs = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        if accepts_kwargs:
+            return kwargs
+
+        supported = set(params)
+        filtered = {k: v for k, v in kwargs.items() if k in supported}
+        dropped = sorted(set(kwargs) - set(filtered))
+        if dropped:
+            logger.warning(
+                "%s: ignoring unsupported aiomqtt.Client options: %s",
+                self.adapter_name,
+                ", ".join(dropped),
+            )
+        return filtered
+
     async def _connect_mqtt(
         self,
         *,
@@ -74,7 +204,12 @@ class MqttCachedAdapter(BaseAdapter):
             raise AdapterConnectionError(f"{self.adapter_name}: '{port_key}' must be > 0.")
 
         try:
-            client = _aiomqtt.Client(hostname=self._broker_host, port=self._port)
+            client_kwargs = self._build_mqtt_client_kwargs(config)
+            client = _aiomqtt.Client(
+                hostname=self._broker_host,
+                port=self._port,
+                **client_kwargs,
+            )
             self._client = await client.__aenter__()
             for topic in topics:
                 await self._client.subscribe(topic)
