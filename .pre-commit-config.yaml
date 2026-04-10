@@ -23,17 +23,23 @@ repos:
       - id: license-header
         name: Apache-2.0 license header
         language: python
-        entry: python -c "
-import sys, pathlib
-missing = [
-    str(f) for f in pathlib.Path('.').rglob('*.py')
-    if any(p in str(f) for p in ['ori/', 'tests/'])
-    and 'SPDX-License-Identifier: Apache-2.0' not in f.read_text()
-]
-if missing:
-    print('Missing license header:\\n' + '\\n'.join(missing))
-    sys.exit(1)
-"
+        entry: python
+        args:
+          - -c
+          - |-
+            import pathlib
+            import sys
+
+            missing = [
+                str(f)
+                for f in pathlib.Path(".").rglob("*.py")
+                if any(p in str(f) for p in ["ori/", "tests/"])
+                and "SPDX-License-Identifier: Apache-2.0" not in f.read_text()
+            ]
+
+            if missing:
+                print("Missing license header:\n" + "\n".join(missing))
+                sys.exit(1)
         pass_filenames: false
 
   # ── Commit message format ────────────────────────────────────────────────────
@@ -43,19 +49,27 @@ if missing:
         name: Conventional commit format
         language: python
         stages: [commit-msg]
-        entry: python -c "
-import sys, re
-msg = open(sys.argv[1]).read().split('\n')[0]
-pattern = r'^(feat|fix|docs|test|skill|refactor|perf|build|ci|chore|revert|security)(\([a-z0-9/-]+\))?: .{1,100}$'
-if not re.match(pattern, msg):
-    print(f'❌ Commit message does not follow Conventional Commits format.')
-    print(f'   Got: {msg!r}')
-    print(f'   Expected: type(scope): description')
-    print(f'   Valid types: feat fix docs test skill refactor perf build ci chore revert security')
-    sys.exit(1)
-"
-        args: [.git/COMMIT_EDITMSG]
-        pass_filenames: false
+        entry: python
+        args:
+          - -c
+          - |-
+            import re
+            import sys
+
+            msg = open(sys.argv[1]).read().split("\n")[0]
+            pattern = (
+                r"^(feat|fix|docs|test|skill|refactor|perf|build|ci|chore|revert|security)"
+                r"(\([a-z0-9/-]+\))?: .{1,100}$"
+            )
+            if not re.match(pattern, msg):
+                print("❌ Commit message does not follow Conventional Commits format.")
+                print(f"   Got: {msg!r}")
+                print("   Expected: type(scope): description")
+                print(
+                    "   Valid types: feat fix docs test skill refactor perf build ci chore revert security"
+                )
+                sys.exit(1)
+        pass_filenames: true
 
   # ── Basic file hygiene ───────────────────────────────────────────────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
