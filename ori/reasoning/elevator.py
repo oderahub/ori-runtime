@@ -185,13 +185,17 @@ class IntelligenceElevator:
             )
 
         if tier in ("local_slm",) and self._local_llm is not None:
-            prompt = self._build_prompt(event, skill)
+            prompt = self._build_prompt(
+                event,
+                skill,
+                trigger_name=rule_result.rule_name if rule_result.matched else None,
+            )
             try:
                 result = await self._local_llm.reason(prompt)
                 result.prompt = prompt
                 if rule_result.matched and result.action_tier != "D":
                     result.action_tier = rule_result.action_tier
-                    result.proposed_action = result.proposed_action or rule_result.action
+                result.proposed_action = result.proposed_action or rule_result.action
                 return result
             except Exception:
                 logger.exception(
@@ -348,6 +352,20 @@ class IntelligenceElevator:
                 else await self._evaluate_rules_with_hooks(event, skill, state_store)
             )
 
+            # Clamp any model-produced tier to the matched trigger's declared tier.
+            # Trigger tier is the authority; model output must not escalate or
+            # downgrade physical actuation boundaries.
+            if rule_res.matched and rule_res.action_tier in {"A", "B", "C", "D"}:
+                if result.action_tier != rule_res.action_tier:
+                    logger.warning(
+                        "IntelligenceElevator: clamping action tier from %s to %s "
+                        "for trigger=%r",
+                        result.action_tier,
+                        rule_res.action_tier,
+                        rule_res.rule_name,
+                    )
+                    result.action_tier = rule_res.action_tier
+
             if hasattr(skill, "hooks") and hasattr(skill.hooks, "post_reasoning"):
                 from ori.skills.hooks_api import HookContext
 
@@ -473,7 +491,12 @@ class IntelligenceElevator:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _build_prompt(self, event: OriEvent, skill: Any) -> str:
+    def _build_prompt(
+        self,
+        event: OriEvent,
+        skill: Any,
+        trigger_name: str | None = None,
+    ) -> str:
         """Build a plain-text prompt from the event and skill metadata."""
         lines: list[str] = []
         if event.reading:
@@ -484,9 +507,12 @@ class IntelligenceElevator:
         lines.append(f"Device: {event.device_id}")
         prompt_template: str | None = None
         if hasattr(skill, "prompts") and isinstance(skill.prompts, dict):
-            prompt_template = skill.prompts.get(
-                event.reading.sensor_type if event.reading else ""
-            )
+            if trigger_name:
+                prompt_template = skill.prompts.get(trigger_name)
+            if prompt_template is None:
+                prompt_template = skill.prompts.get(
+                    event.reading.sensor_type if event.reading else ""
+                )
         if prompt_template:
             lines.append(prompt_template)
         else:

@@ -257,6 +257,48 @@ class TestReason:
         assert result.prompt != ""
         assert "load-current" in result.prompt  # sensor_id appears in prompt
 
+    async def test_trigger_prompt_template_preferred_over_sensor_prompt(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {
+            "anomalous_draw": "TRIGGER_PROMPT",
+            "current_clamp": "SENSOR_PROMPT",
+        }
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert "TRIGGER_PROMPT" in result.prompt
+        assert "SENSOR_PROMPT" not in result.prompt
+
+    async def test_sensor_prompt_used_when_trigger_prompt_missing(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {"current_clamp": "SENSOR_PROMPT"}
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert "SENSOR_PROMPT" in result.prompt
+
     async def test_rule_engine_result_has_empty_prompt(self):
         """Rule engine (Tier D, bypass_llm=True) must leave prompt as empty string."""
         elevator = IntelligenceElevator()
@@ -332,6 +374,30 @@ class TestReasonAndDispatch:
 
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["tier"] == "D"
+
+    async def test_reason_and_dispatch_clamps_result_tier_to_trigger_tier(self):
+        mock_dispatcher = AsyncMock()
+        skill = _tier_a_skill()
+        elevator = IntelligenceElevator()
+
+        with patch.object(
+            elevator,
+            "reason",
+            return_value=ReasoningResult(
+                text="injected",
+                tier="local_slm",
+                model="stub",
+                tokens_used=0,
+                latency_ms=0,
+                action_tier="D",
+            ),
+        ):
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), skill, None, mock_dispatcher
+            )
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["tier"] == "A"
 
     async def test_exception_in_reason_is_caught(self):
         """A crash inside reason() must not propagate from reason_and_dispatch."""
