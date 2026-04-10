@@ -44,6 +44,13 @@ jobs:
           fi
           echo "✅ All Python files have license headers"
 
+      - name: Guard Tier Escalation Invariants
+        run: |
+          pytest -v \
+            tests/test_action_dispatcher.py::TestCapabilityTierGuard \
+            tests/test_soundness_verification.py::test_tier_c_dispatch_upgrade \
+            tests/test_soundness_verification.py::test_dispatcher_never_downgrades_tier
+
       - name: Run tests with coverage
         run: |
           pytest tests/ -v \
