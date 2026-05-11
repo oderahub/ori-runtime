@@ -24,12 +24,14 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import OriEvent, ReasoningResult
 from ori.reasoning.capability_posture import (
     CapabilityPosture,
     probe_internet_available,
 )
+from ori.reasoning.causal_memory import CausalMemory
 from ori.reasoning.rule_engine import RuleEngine, RuleEngineSafetyError
 from ori.time_utils import now_ms
 
@@ -64,8 +66,19 @@ class _ParsedHistoryCall:
     args: tuple[Any, ...]
 
 
-def _hour_now() -> int:
-    return datetime.datetime.now().hour
+def _hour_now(event: OriEvent | None = None) -> int:
+    tz_name = ""
+    if event is not None and isinstance(getattr(event, "context", None), dict):
+        tz_name = str(event.context.get("device_timezone", "") or "").strip()
+    if tz_name:
+        try:
+            return datetime.datetime.now(ZoneInfo(tz_name)).hour
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning(
+                "IntelligenceElevator: invalid device_timezone %r; falling back to UTC",
+                tz_name,
+            )
+    return datetime.datetime.now(datetime.timezone.utc).hour
 
 
 def _is_offline() -> bool:
@@ -196,11 +209,35 @@ class IntelligenceElevator:
             :class:`~ori.network.events.ReasoningResult` from whichever tier
             handled the request.
         """
-        tier = await self.select_tier(event, skill, state_store)
-
-        rule_result, _ = await self._evaluate_rules_with_hooks(
-            event, skill, state_store
+        result, _ = await self._reason_with_rule_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            precomputed_rule_result=None,
         )
+        return result
+
+    async def _reason_with_rule_result(
+        self,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        precomputed_rule_result: Any = None,
+    ) -> tuple[ReasoningResult, Any]:
+        """Run reasoning and return both the model result and evaluated rule result."""
+        rule_result = precomputed_rule_result
+        if rule_result is None:
+            rule_result, _ = await self._evaluate_rules_with_hooks(
+                event, skill, state_store
+            )
+
+        tier = await self._select_tier_from_rule_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            rule_result=rule_result,
+        )
+
         rejection_record = await self._lookup_rejection_record(
             event=event,
             skill=skill,
@@ -227,18 +264,55 @@ class IntelligenceElevator:
                 event.context["__rejection_cap_tier_a"] = True
 
         if tier == "rule":
-            return ReasoningResult(
-                text=f"Rule matched: {rule_result.rule_name}",
-                tier="rule",
-                model="rule_engine",
-                tokens_used=0,
-                latency_ms=0,
-                confidence=rule_result.confidence,
-                action_tier=rule_result.action_tier,
-                proposed_action=rule_result.action,
+            return (
+                ReasoningResult(
+                    text=f"Rule matched: {rule_result.rule_name}",
+                    tier="rule",
+                    model="rule_engine",
+                    tokens_used=0,
+                    latency_ms=0,
+                    confidence=rule_result.confidence,
+                    action_tier=rule_result.action_tier,
+                    proposed_action=rule_result.action,
+                ),
+                rule_result,
+            )
+
+        causal_hit = await self._lookup_causal_resolution(
+            event=event,
+            rule_result=rule_result,
+            state_store=state_store,
+        )
+        if causal_hit is not None:
+            pattern_key, cached_text = causal_hit
+            if isinstance(getattr(event, "context", None), dict):
+                event.context["__causal_memory_hit"] = True
+                event.context["__causal_memory_key"] = pattern_key
+            return (
+                ReasoningResult(
+                    text=cached_text,
+                    tier="local_slm",
+                    model="causal_memory",
+                    tokens_used=0,
+                    latency_ms=0,
+                    confidence=1.0,
+                    action_tier=(
+                        "A" if rejection_record is not None else rule_result.action_tier
+                    ),
+                    proposed_action=rule_result.action,
+                ),
+                rule_result,
             )
 
         if tier in ("local_slm",) and self._local_llm is not None:
+            pattern_key: str | None = None
+            if self._causal_memory_enabled() and rule_result.matched:
+                trigger_name = str(getattr(rule_result, "rule_name", "") or "")
+                if trigger_name and event.reading is not None:
+                    try:
+                        pattern_key = CausalMemory.generate_key(event, trigger_name)
+                    except Exception:
+                        pattern_key = None
             prompt = await self._build_prompt(
                 event,
                 skill,
@@ -258,7 +332,13 @@ class IntelligenceElevator:
                 if rejection_record is not None:
                     result.action_tier = "A"
                 result.proposed_action = result.proposed_action or rule_result.action
-                return result
+                await self._store_causal_resolution(
+                    state_store=state_store,
+                    pattern_key=pattern_key,
+                    text=result.text,
+                    confidence=float(getattr(result, "confidence", 0.0) or 0.0),
+                )
+                return result, rule_result
             except Exception:
                 logger.exception(
                     "IntelligenceElevator: local_slm inference failed for "
@@ -273,7 +353,7 @@ class IntelligenceElevator:
             stub.proposed_action = rule_result.action
         if rejection_record is not None:
             stub.action_tier = "A"
-        return stub
+        return stub, rule_result
 
     async def _is_offline_async(self) -> bool:
         """Run connectivity probe in a worker thread to avoid blocking the loop."""
@@ -336,6 +416,24 @@ class IntelligenceElevator:
            internet available → ``'cloud'`` (future)
            fallback → ``'local_slm'``
         """
+        rule_result, _ = await self._evaluate_rules_with_hooks(
+            event, skill, state_store
+        )
+        return await self._select_tier_from_rule_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            rule_result=rule_result,
+        )
+
+    async def _select_tier_from_rule_result(
+        self,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        rule_result: Any,
+    ) -> str:
+        """Select reasoning tier using a pre-evaluated rule result."""
         # Energy-aware throttle: cap to rule-only under low battery to preserve
         # power for safety actions. Tier D remains guaranteed by rule execution
         # in the reasoning path.
@@ -360,10 +458,6 @@ class IntelligenceElevator:
                     self._last_power_mode = "low"
                     return "rule"
                 self._last_power_mode = "normal"
-
-        rule_result, _ = await self._evaluate_rules_with_hooks(
-            event, skill, state_store
-        )
 
         # Tier D is always handled by the rule engine — return immediately
         if rule_result.matched and rule_result.action_tier == "D":
@@ -412,7 +506,9 @@ class IntelligenceElevator:
                     event.sensor_id,
                 )
 
-        complexity = _complexity_score(current_value, avg_24h, history, _hour_now())
+        complexity = _complexity_score(
+            current_value, avg_24h, history, _hour_now(event)
+        )
 
         offline = await self._is_offline_async()
         fallback = (
@@ -536,6 +632,77 @@ class IntelligenceElevator:
             return raw if isinstance(raw, dict) else {}
         raw = getattr(cfg, "causal_memory", {}) or {}
         return raw if isinstance(raw, dict) else {}
+
+    def _causal_memory_enabled(self) -> bool:
+        cfg = self._causal_memory_cfg()
+        if not cfg:
+            return False
+        return bool(cfg.get("enabled", False))
+
+    def _causal_memory_min_confidence(self) -> float:
+        cfg = self._causal_memory_cfg()
+        raw = cfg.get("min_confidence_to_store", 0.0)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def _lookup_causal_resolution(
+        self,
+        event: OriEvent,
+        rule_result: Any,
+        state_store: Any,
+    ) -> tuple[str, str] | None:
+        """Return ``(pattern_key, cached_text)`` for a causal-memory hit."""
+        if not self._causal_memory_enabled():
+            return None
+        if state_store is None or event.reading is None:
+            return None
+        if not getattr(rule_result, "matched", False):
+            return None
+        trigger_name = str(getattr(rule_result, "rule_name", "") or "")
+        if not trigger_name:
+            return None
+        if not hasattr(state_store, "lookup_causal_memory"):
+            return None
+
+        try:
+            pattern_key = CausalMemory.generate_key(event, trigger_name)
+            cache = CausalMemory(state_store)
+            cached = await cache.lookup(pattern_key)
+            if isinstance(cached, str) and cached.strip():
+                return pattern_key, cached.strip()
+        except Exception:
+            logger.exception(
+                "IntelligenceElevator: causal-memory lookup failed for trigger=%r",
+                trigger_name,
+            )
+        return None
+
+    async def _store_causal_resolution(
+        self,
+        state_store: Any,
+        pattern_key: str | None,
+        text: str,
+        confidence: float,
+    ) -> None:
+        if not self._causal_memory_enabled():
+            return
+        if state_store is None:
+            return
+        if not pattern_key:
+            return
+        if not hasattr(state_store, "store_causal_memory"):
+            return
+        if not text.strip():
+            return
+        if confidence < self._causal_memory_min_confidence():
+            return
+        try:
+            cache = CausalMemory(state_store)
+            await cache.store(pattern_key, text.strip(), confidence)
+        except Exception:
+            logger.exception("IntelligenceElevator: causal-memory store failed")
 
     @staticmethod
     def _tier_rank(tier: str) -> int:
@@ -685,12 +852,11 @@ class IntelligenceElevator:
                 if pre_rule_result.rule_name != handler_trigger_name:
                     return
 
-            result = await self.reason(event, skill, state_store)
-
-            rule_res, _ = (
-                (pre_rule_result, None)
-                if pre_rule_result is not None
-                else await self._evaluate_rules_with_hooks(event, skill, state_store)
+            result, rule_res = await self._reason_with_rule_result(
+                event=event,
+                skill=skill,
+                state_store=state_store,
+                precomputed_rule_result=pre_rule_result,
             )
 
             # Clamp any model-produced tier to the matched trigger's declared tier.

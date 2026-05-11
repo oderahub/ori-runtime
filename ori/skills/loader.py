@@ -19,6 +19,7 @@ All I/O (LLM inference, network, GPIO) runs inside the background task.
 import asyncio
 import importlib.util
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -38,7 +39,9 @@ _VALID_TIERS = frozenset({"A", "B", "C", "D"})
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
+_BUNDLED_SIGNATURE_SENTINEL = "bundled"
 _HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
+_HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -189,12 +192,18 @@ class SkillLoader:
         state_store: Any = None,
         dispatcher: Any = None,
         os_sandbox_config: dict[str, Any] | None = None,
+        community_trust_anchor_public_key_b64: str | None = None,
     ) -> None:
         self._elevator = elevator
         self._state_store = state_store
         self._dispatcher = dispatcher
         self._os_sandbox_config = (
             dict(os_sandbox_config) if isinstance(os_sandbox_config, dict) else {}
+        )
+        self._community_trust_anchor_public_key_b64 = (
+            str(community_trust_anchor_public_key_b64).strip()
+            if isinstance(community_trust_anchor_public_key_b64, str)
+            else None
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -278,7 +287,7 @@ class SkillLoader:
                 f"Skill {skill_dir.name!r}: skill.yaml must be a mapping"
             )
 
-        self._validate_skill_metadata(raw, skill_dir.name)
+        self._validate_skill_metadata(raw, skill_dir)
 
         triggers = self._parse_triggers(
             raw.get("triggers") or [], raw.get("name", "<unknown>")
@@ -319,20 +328,38 @@ class SkillLoader:
         if self._is_bundled_skill(skill_dir):
             return
 
-        if _HUB_ROOT_PUBLIC_KEY_B64 == "PENDING_REPLACE_AT_HUB_LAUNCH":
+        signature = str(raw.get("signature") or "").strip()
+        if signature == _BUNDLED_SIGNATURE_SENTINEL:
+            raise SkillSecurityError(
+                "community skill uses bundled signature sentinel. "
+                "Re-sign with an 'ed25519:' signature before installing under ~/.ori/skills/."
+            )
+
+        trust_anchor = self._resolve_community_trust_anchor()
+        if trust_anchor == "PENDING_REPLACE_AT_HUB_LAUNCH":
             raise SkillSecurityError(
                 "community skill verification trust anchor is not configured"
             )
 
         verify_community_skill_signature(
             raw_skill=raw,
-            trust_anchor_public_key_b64=_HUB_ROOT_PUBLIC_KEY_B64,
+            trust_anchor_public_key_b64=trust_anchor,
         )
 
-    def _validate_skill_metadata(
-        self, raw: dict[str, Any], skill_dir_name: str
-    ) -> None:
+    def _resolve_community_trust_anchor(self) -> str:
+        """Resolve trust anchor: constructor override > env var > built-in sentinel."""
+        if self._community_trust_anchor_public_key_b64:
+            return self._community_trust_anchor_public_key_b64
+
+        env_value = os.getenv(_HUB_TRUST_ANCHOR_ENV, "").strip()
+        if env_value:
+            return env_value
+
+        return _HUB_ROOT_PUBLIC_KEY_B64
+
+    def _validate_skill_metadata(self, raw: dict[str, Any], skill_dir: Path) -> None:
         """Validate core metadata presence for runtime-loadable skills."""
+        skill_dir_name = skill_dir.name
         name = str(raw.get("name") or "").strip()
         version = str(raw.get("version") or "").strip()
         author = str(raw.get("author") or "").strip()
@@ -353,6 +380,19 @@ class SkillLoader:
         if not isinstance(triggers, list) or len(triggers) == 0:
             raise SkillValidationError(
                 f"Skill {name!r}: triggers must be a non-empty list"
+            )
+
+        if self._is_bundled_skill(skill_dir):
+            signature = str(raw.get("signature") or "").strip()
+            if not signature:
+                return
+            if signature == _BUNDLED_SIGNATURE_SENTINEL:
+                return
+            if signature.startswith("ed25519:"):
+                return
+            raise SkillValidationError(
+                f"Skill {name!r}: bundled skill signature must be either "
+                f"{_BUNDLED_SIGNATURE_SENTINEL!r} or an 'ed25519:' signature."
             )
 
     def register(self, skill: Skill, event_bus: Any) -> list[tuple[str, Any]]:
