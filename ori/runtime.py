@@ -32,6 +32,7 @@ from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
+from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
 from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
@@ -611,12 +612,6 @@ class OriRuntime:
         elevator.attach_event_bus(event_bus)
         self._event_bus = event_bus
         if posture_tracker is not None:
-
-            async def _on_gateway_health(event: OriEvent) -> None:
-                posture_tracker.record_gateway_heartbeat(event.timestamp)
-
-            event_bus.subscribe("ori/gateway/health", _on_gateway_health)
-
             # Build an initial posture snapshot before processing events.
             posture = await posture_tracker.refresh(
                 sms_available=is_truthy(config.actions.sms.get("enabled", False)),
@@ -868,6 +863,19 @@ class OriRuntime:
         gateway_export_task = self._start_gateway_export_responder_if_enabled(config)
         if gateway_export_task is not None:
             self._background_tasks.append(gateway_export_task)
+
+        hb_subscriber = (
+            _build_gateway_heartbeat_subscriber(config, posture_tracker)
+            if posture_tracker is not None
+            else None
+        )
+        if hb_subscriber is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    hb_subscriber.serve_until(self._shutdown_event),
+                    name="gateway-heartbeat",
+                )
+            )
 
         await self._start_health_socket_if_enabled(config)
 
@@ -2935,6 +2943,42 @@ def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor 
             f"gateway encryption is enabled but environment variable {env_name!r} is empty"
         )
     return GatewayMessageEncryptor(GatewayMessageEncryptionConfig(shared_secret=secret))
+
+
+def _build_gateway_heartbeat_subscriber(
+    config: Config,
+    posture_tracker: CapabilityPostureTracker,
+) -> MqttGatewayHeartbeatSubscriber | None:
+    """Instantiate the MQTT gateway heartbeat subscriber when configured."""
+    if not bool(config.gateway.enabled):
+        return None
+    auth_cfg = getattr(config.gateway, "auth", {}) or {}
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    if not auth_enabled:
+        logger.warning(
+            "[gateway-heartbeat] gateway.auth.enabled is false — heartbeat "
+            "payloads are accepted without HMAC verification. A spoofed "
+            "heartbeat can corrupt gateway liveness state and cause the "
+            "elevator to burn escalation timeout budget on a non-existent "
+            "gateway. Enable gateway.auth for all production deployments."
+        )
+    try:
+        subscriber = MqttGatewayHeartbeatSubscriber(
+            broker_url=config.gateway.broker_url,
+            posture_tracker=posture_tracker,
+            device_id=config.device.id,
+            tls_config=getattr(config.gateway, "tls", {}),
+            authenticator=_build_gateway_message_auth(config),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid gateway heartbeat configuration")
+        return None
+    logger.info(
+        "[runtime] MQTT gateway heartbeat subscriber enabled on %s (auth=%s)",
+        "ori/gateway/health",
+        "enabled" if auth_enabled else "disabled",
+    )
+    return subscriber
 
 
 def _build_context_enricher(config: Config) -> ContextEnricher | None:

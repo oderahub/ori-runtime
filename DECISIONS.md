@@ -96,12 +96,14 @@ Rules:
 - Runtime reasoning requests, gateway reasoning responses, gateway export
   requests, and runtime export responses use an `auth` envelope containing
   `scheme`, `signed_at_ms`, and `signature`.
-- MQTT gateway heartbeat authentication is deferred because gateway heartbeat
-  posture currently uses the runtime's in-process `EventBus`
-  (`ori/gateway/health`) and has no MQTT producer/consumer transport to
-  authenticate. When a real MQTT gateway heartbeat topic is added, it must use
-  the same gateway envelope authentication and include a rejection test for
-  unsigned/stale/replayed heartbeat payloads.
+- MQTT gateway heartbeat authentication uses `GatewayMessageAuthenticator.verify_broadcast`
+  when `gateway.auth.enabled: true` (the production recommendation). The
+  heartbeat payload carries no `device_id` and uses a LAN-broadcast topic;
+  `verify_broadcast` omits device binding but retains HMAC, timestamp skew, and
+  replay-TTL protection. When `gateway.auth.enabled: false` (a convenience
+  default for initial LAN setup only), unsigned heartbeats are accepted; the
+  security guarantee is then conditional on correct broker ACL configuration.
+  See the 2026-06-10 entry for the full authentication and routing rationale.
 - Replay protection for gateway MQTT messages is in-memory and TTL-bounded.
   Remote commands remain durably audited in SQLite because they are rare and
   state-mutating; gateway messages are short-lived and higher frequency.
@@ -893,3 +895,77 @@ Rationale:
   prompt if the event loop is busy.
 - Bounded, deterministic output (ORDER BY sensor_id, LIMIT max_entries)
   prevents prompt length from growing unboundedly as a deployment adds sensors.
+
+---
+
+## 2026-06-10 — Gateway Heartbeat MQTT Subscription and Auth
+
+**Status:** Accepted
+
+Rules:
+
+- `MqttGatewayHeartbeatSubscriber` subscribes to `ori/gateway/health` and
+  calls `CapabilityPostureTracker.record_gateway_heartbeat(timestamp_ms)`
+  directly via `loop.call_soon_threadsafe` for each valid heartbeat received.
+  The sensor `EventBus` is not used; the heartbeat is an infrastructure liveness
+  signal, not sensor data.
+- When `gateway.auth.enabled: true`, each heartbeat payload is verified by
+  `GatewayMessageAuthenticator.verify_broadcast` before posture is updated.
+  Heartbeats that fail HMAC verification, timestamp skew, or replay checks are
+  discarded with a WARNING.
+- `gateway.auth.enabled: true` is the production recommendation. When enabled,
+  unsigned heartbeats are rejected in code regardless of broker configuration.
+- When `gateway.auth.enabled: false` (the default for initial LAN setup),
+  unsigned heartbeats are accepted. The security guarantee is then conditional
+  on the broker ACL being correctly configured to restrict `topic write
+  ori/gateway/health` to the gateway's MQTT user only (see
+  `docs/MQTT_SECURITY.md`). A misconfigured or absent ACL allows any LAN client
+  to spoof a heartbeat and cause reasoning-quality degradation (gateway escalation
+  times out, falls back to local SLM). This is not a safety failure — Tier D and
+  action tier authority are unaffected — but `auth.enabled: false` is a
+  convenience default, not a production-endorsed posture.
+- `verify_broadcast` uses the same shared secret as `verify` but omits
+  `device_id` binding. Replay key: `message_type + signed_at_ms + signature`.
+  Device binding is not required on a site-wide broadcast topic: the threat is
+  stale replay (making the runtime believe the gateway is alive when it is not),
+  which is addressed by timestamp skew and replay TTL.
+- Rejection tests for unsigned, stale, and replayed heartbeats are in
+  `tests/test_gateway_heartbeat.py`.
+
+Rationale:
+
+- Gateway liveness is tracked via TTL-based `_is_gateway_reachable`: the
+  runtime does not initiate any probe to verify gateway health. The heartbeat
+  subscription is the only signal path for `gateway_reachable` in
+  `CapabilityPosture`. Without it, the elevator silently misroutes Tier 3
+  escalations on idle sites — the TTL expires with no implicit liveness signal.
+- The gateway is a separate process on a separate machine. The heartbeat is a
+  cross-process infrastructure signal; routing it through the sensor `EventBus`
+  would conflate two semantically different event streams and expose it to
+  wildcard skill subscribers that assume `event.reading` is set. The direct call
+  to `record_gateway_heartbeat` is the correct interface — the heartbeat module
+  is in the gateway package and knows exactly what it is updating.
+- `verify_broadcast` is a distinct method from `verify` because the two
+  verification paths have different trust models: per-device reasoning and export
+  envelopes bind to `device_id` to prevent cross-device replay; a site-wide
+  broadcast does not require device scoping. Both methods share the same HMAC
+  key and replay cache, so a compromise of one does not require changes to the
+  other.
+
+Security posture when `gateway.auth.enabled: false` (not recommended for production):
+
+- A spoofed heartbeat corrupts `_last_gateway_heartbeat_ms` and makes the
+  elevator treat the gateway as reachable when it is not. The elevator then
+  attempts Tier 3 escalation, burns the full reasoning timeout budget, and
+  falls back to local SLM. This is a functional attack on reasoning quality:
+  gateway escalation exists precisely to improve reasoning; the only acceptable
+  cause of escalation failure is genuine gateway unavailability within timeout
+  limits, not a forged liveness signal.
+- Tier D is unaffected by gateway availability by construction; physical safety
+  is not compromised. But reasoning quality is the operational value of Tier 3,
+  and corrupting gateway liveness state undermines it in a way that is
+  indistinguishable from a real outage.
+- `auth.enabled: false` is only appropriate for controlled initial setup on a
+  site where broker ACL correctness is guaranteed and the gateway is not yet
+  configured to sign heartbeats. Any deployment where gateway reasoning quality
+  matters must enable auth.
